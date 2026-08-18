@@ -1,0 +1,64 @@
+name: Scrape jobs and deploy
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"   # every 2 hours, on the hour (UTC)
+  workflow_dispatch: {}      # allow manual runs from the Actions tab
+  push:
+    branches: [main]         # deploy on code changes too
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# Never run two scrapes at once (avoids commit races).
+concurrency:
+  group: scrape-and-deploy
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        run: python scraper.py
+
+      - name: Commit updated job data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/jobs.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update jobs data ($(date -u +'%Y-%m-%d %H:%M UTC'))"
+            git pull --rebase origin main
+            git push
+          fi
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: scrape
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
