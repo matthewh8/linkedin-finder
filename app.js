@@ -17,6 +17,13 @@
     hideApplied: false,
     applied: {},             // job_url -> ISO timestamp
     blocked: [],             // company names
+    page: 1,
+    perPage: 20,
+    totalJobs: 0,
+    totalSeen: 0,
+    hasMore: false,
+    loading: false,
+    fetching: false,
   };
 
   var SOURCES = {
@@ -65,6 +72,10 @@
     presetName: document.getElementById("preset-name"),
     presetSave: document.getElementById("preset-save"),
     presetList: document.getElementById("preset-list"),
+    fetchMoreBtn: document.getElementById("fetch-more-btn"),
+    freshUpdateBtn: document.getElementById("fresh-update-btn"),
+    loadMoreRow: document.getElementById("load-more-row"),
+    loadMoreBtn: document.getElementById("load-more-btn"),
   };
 
   // ---------- Persistence (localStorage) ----------
@@ -205,33 +216,10 @@
 
   // ---------- Filtering ----------
 
-  function matchersFor(filterLabel) {
-    for (var i = 0; i < state.locationFilters.length; i++) {
-      if (state.locationFilters[i].label === filterLabel) {
-        return state.locationFilters[i].matchers || [];
-      }
-    }
-    return null;
-  }
-
   function visibleJobs() {
-    var needles = null;
-    if (state.selectedLocations.length > 0) {
-      needles = [];
-      state.selectedLocations.forEach(function (label) {
-        var m = matchersFor(label);
-        if (m) needles = needles.concat(m);
-      });
-    }
-    var q = state.query.trim().toLowerCase();
     return state.jobs.filter(function (job) {
       if (isBlocked(job.company)) return false;
       if (state.hideApplied && isApplied(job.job_url)) return false;
-      if (needles) {
-        var loc = (job.location || "").toLowerCase();
-        var hit = needles.some(function (n) { return loc.indexOf(n) !== -1; });
-        if (!hit) return false;
-      }
       if (state.excludedKeywords.length > 0) {
         var titleLower = (job.title || "").toLowerCase();
         var excluded = state.excludedKeywords.some(function (kw) {
@@ -239,12 +227,105 @@
         });
         if (excluded) return false;
       }
-      if (q) {
-        var hay = ((job.title || "") + " " + (job.company || "")).toLowerCase();
-        if (hay.indexOf(q) === -1) return false;
-      }
       return true;
     });
+  }
+
+  // ---------- API ----------
+
+  function buildJobsUrl(page) {
+    var params = "page=" + page + "&per_page=" + state.perPage;
+    if (state.selectedLocations.length > 0) {
+      params += "&location=" + encodeURIComponent(state.selectedLocations.join(","));
+    }
+    if (state.query) {
+      params += "&q=" + encodeURIComponent(state.query);
+    }
+    return "/api/jobs?" + params;
+  }
+
+  function fetchJobs(page, append) {
+    state.loading = true;
+    renderLoadMore();
+    return fetch(buildJobsUrl(page))
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        if (append) {
+          state.jobs = state.jobs.concat(data.jobs || []);
+        } else {
+          state.jobs = data.jobs || [];
+        }
+        state.page = data.page;
+        state.totalJobs = data.total;
+        state.hasMore = data.has_more;
+        state.lastUpdated = data.last_updated ? new Date(data.last_updated) : null;
+        if (state.lastUpdated && !isNaN(state.lastUpdated)) {
+          els.lastUpdated.textContent = "Updated " + relativeTime(state.lastUpdated);
+        }
+        state.loading = false;
+        renderList();
+        renderLoadMore();
+      })
+      .catch(function (err) {
+        state.loading = false;
+        renderLoadMore();
+        els.listHeader.textContent = "Error loading jobs: " + err.message;
+      });
+  }
+
+  function loadMore() {
+    if (state.loading || !state.hasMore) return;
+    fetchJobs(state.page + 1, true);
+  }
+
+  function triggerScrape(endpoint) {
+    state.fetching = true;
+    renderScrapeButtons();
+    return fetch(endpoint, { method: "POST" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        state.fetching = false;
+        renderScrapeButtons();
+        if (data.status === "ok") {
+          state.page = 1;
+          return fetchJobs(1, false);
+        } else {
+          els.listHeader.textContent = "Scrape error — check server logs";
+        }
+      })
+      .catch(function (err) {
+        state.fetching = false;
+        renderScrapeButtons();
+        els.listHeader.textContent = "Scrape failed: " + err.message;
+      });
+  }
+
+  function renderLoadMore() {
+    if (state.loading) {
+      els.loadMoreRow.hidden = false;
+      els.loadMoreBtn.textContent = "Loading...";
+      els.loadMoreBtn.disabled = true;
+    } else if (state.hasMore) {
+      els.loadMoreRow.hidden = false;
+      var remaining = state.totalJobs - state.jobs.length;
+      els.loadMoreBtn.textContent = "Show more jobs (" + remaining + " remaining)";
+      els.loadMoreBtn.disabled = false;
+    } else {
+      els.loadMoreRow.hidden = true;
+    }
+  }
+
+  function renderScrapeButtons() {
+    els.fetchMoreBtn.disabled = state.fetching;
+    els.freshUpdateBtn.disabled = state.fetching;
+    els.fetchMoreBtn.textContent = state.fetching ? "Fetching..." : "Fetch more";
+    els.freshUpdateBtn.textContent = state.fetching ? "Updating..." : "Fresh update";
   }
 
   // ---------- Rendering ----------
@@ -323,9 +404,12 @@
     }).join("");
 
     els.emptyState.hidden = jobs.length > 0;
-    els.resultCount.textContent = jobs.length + (jobs.length === 1 ? " job" : " jobs");
+    var showing = jobs.length;
+    var total = state.totalJobs;
+    els.resultCount.textContent = showing + " of " + total +
+      (total === 1 ? " job" : " jobs");
     els.listHeader.textContent = "New grad software engineer roles · " +
-      jobs.length + " result" + (jobs.length === 1 ? "" : "s");
+      showing + " of " + total + " result" + (total === 1 ? "" : "s");
 
     // Keep a valid selection on desktop so the detail pane isn't stale.
     var selectedVisible = jobs.some(function (j) { return j.job_url === state.selectedUrl; });
@@ -422,6 +506,26 @@
     els.layout.classList.remove("show-detail");
   });
 
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    var tag = (document.activeElement || {}).tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    var jobs = visibleJobs();
+    if (!jobs.length) return;
+    var idx = -1;
+    if (state.selectedUrl) {
+      for (var i = 0; i < jobs.length; i++) {
+        if (jobs[i].job_url === state.selectedUrl) { idx = i; break; }
+      }
+    }
+    var next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
+    if (next < 0 || next >= jobs.length) return;
+    e.preventDefault();
+    selectJob(jobs[next].job_url, true);
+    var cards = els.list.querySelectorAll(".job-card");
+    if (cards[next]) cards[next].scrollIntoView({ block: "nearest" });
+  });
+
   els.chips.addEventListener("click", function (e) {
     var chip = e.target.closest(".chip");
     if (!chip) return;
@@ -438,12 +542,18 @@
     }
     saveStored("nj_locations", state.selectedLocations);
     renderChips();
-    renderList();
+    state.page = 1;
+    fetchJobs(1, false);
   });
 
+  var searchTimer = null;
   els.searchInput.addEventListener("input", function () {
     state.query = els.searchInput.value;
-    renderList();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () {
+      state.page = 1;
+      fetchJobs(1, false);
+    }, 300);
   });
 
   els.appliedToggle.addEventListener("click", function () {
@@ -502,6 +612,20 @@
         !els.filtersPanel.contains(e.target) && e.target !== els.filtersBtn) {
       els.filtersPanel.hidden = true;
     }
+  });
+
+  // ---------- Scrape & pagination buttons ----------
+
+  els.loadMoreBtn.addEventListener("click", loadMore);
+
+  els.fetchMoreBtn.addEventListener("click", function () {
+    if (state.fetching) return;
+    triggerScrape("/api/fetch-more");
+  });
+
+  els.freshUpdateBtn.addEventListener("click", function () {
+    if (state.fetching) return;
+    triggerScrape("/api/fresh-update");
   });
 
   // ---------- Filters panel ----------
@@ -621,34 +745,22 @@
       renderChips();
       renderKeywords();
       renderControls();
-      renderList();
+      state.page = 1;
+      fetchJobs(1, false);
     }
   });
 
   // ---------- Init ----------
 
-  Promise.all([
-    fetch("data/jobs.json?t=" + Date.now()).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    }),
-    fetch("config.json?t=" + Date.now())
-      .then(function (r) { return r.ok ? r.json() : {}; })
-      .catch(function () { return {}; }),
-  ])
-    .then(function (results) {
-      var data = results[0];
-      var config = results[1];
-      state.jobs = data.jobs || [];
+  fetch("config.json?t=" + Date.now())
+    .then(function (r) { return r.ok ? r.json() : {}; })
+    .catch(function () { return {}; })
+    .then(function (config) {
       state.locationFilters = config.location_filters || [];
-      state.lastUpdated = data.last_updated ? new Date(data.last_updated) : null;
-      if (state.lastUpdated && !isNaN(state.lastUpdated)) {
-        els.lastUpdated.textContent = "Updated " + relativeTime(state.lastUpdated);
-      }
       renderChips();
       renderControls();
       renderBlockedPanel();
-      renderList();
+      return fetchJobs(1, false);
     })
     .catch(function (err) {
       els.listHeader.textContent = "Could not load job data (" + err.message + ")";

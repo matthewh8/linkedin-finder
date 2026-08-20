@@ -12,7 +12,7 @@
   "linkedin": {
     "enabled": true,
     "hours_old": 24,
-    "results_wanted": 50,
+    "batch_size": 15,
     "search_terms": [
       "software engineer new grad",
       "software engineer entry level"

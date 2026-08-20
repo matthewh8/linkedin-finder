@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import re
+import sqlite3
 import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from jobspy import scrape_jobs
 ROOT = Path(__file__).parent
 CONFIG_FILE = ROOT / "config.json"
 DATA_FILE = ROOT / "data" / "jobs.json"
+DB_FILE = ROOT / "data" / "jobs.db"
 
 RETRY_DELAY_SECONDS = 30
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -30,6 +32,147 @@ BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 
 def load_config() -> dict:
     return json.loads(CONFIG_FILE.read_text())
+
+
+# ---------- SQLite persistence ----------
+
+def init_db() -> sqlite3.Connection:
+    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_FILE))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_url              TEXT PRIMARY KEY,
+            source               TEXT NOT NULL,
+            title                TEXT,
+            company              TEXT,
+            location             TEXT,
+            date_posted          TEXT,
+            scraped_at           TEXT NOT NULL,
+            description          TEXT,
+            company_logo         TEXT,
+            salary               TEXT,
+            min_experience_years REAL
+        );
+        CREATE TABLE IF NOT EXISTS seen_urls (
+            url        TEXT PRIMARY KEY,
+            first_seen TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scrape_cursors (
+            source     TEXT NOT NULL,
+            search_key TEXT NOT NULL,
+            offset_val INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (source, search_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jobs_scraped ON jobs(scraped_at DESC);
+    """)
+    conn.commit()
+    return conn
+
+
+def migrate_from_json(conn: sqlite3.Connection):
+    """One-time import of existing data/jobs.json into the DB."""
+    if not DATA_FILE.exists():
+        return
+    row = conn.execute("SELECT COUNT(*) FROM seen_urls").fetchone()
+    if row[0] > 0:
+        return
+    try:
+        data = json.loads(DATA_FILE.read_text())
+    except (json.JSONDecodeError, AttributeError):
+        return
+    jobs = data.get("jobs", [])
+    if not jobs:
+        return
+    print(f"Migrating {len(jobs)} jobs from jobs.json into SQLite...", flush=True)
+    for j in jobs:
+        url = j.get("job_url")
+        if not url:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO seen_urls (url, first_seen) VALUES (?, ?)",
+            (url, j.get("scraped_at", datetime.now(timezone.utc).isoformat())))
+        conn.execute(
+            """INSERT OR IGNORE INTO jobs
+               (job_url, source, title, company, location, date_posted,
+                scraped_at, description, company_logo, salary, min_experience_years)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (url, j.get("source", "linkedin"), j.get("title"), j.get("company"),
+             j.get("location"), j.get("date_posted"), j.get("scraped_at"),
+             j.get("description"), j.get("company_logo"), j.get("salary"),
+             j.get("min_experience_years")))
+    conn.commit()
+    print("  Migration complete.", flush=True)
+
+
+def load_seen_urls(conn: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in conn.execute("SELECT url FROM seen_urls")}
+
+
+def get_cursor(conn: sqlite3.Connection, source: str, search_key: str) -> int:
+    row = conn.execute(
+        "SELECT offset_val FROM scrape_cursors WHERE source=? AND search_key=?",
+        (source, search_key)).fetchone()
+    return row[0] if row else 0
+
+
+def update_cursor(conn: sqlite3.Connection, source: str, search_key: str,
+                  offset_val: int):
+    conn.execute(
+        """INSERT INTO scrape_cursors (source, search_key, offset_val)
+           VALUES (?, ?, ?)
+           ON CONFLICT(source, search_key) DO UPDATE SET offset_val=?""",
+        (source, search_key, offset_val, offset_val))
+
+
+def reset_cursors(conn: sqlite3.Connection, source: str | None = None):
+    if source:
+        conn.execute("DELETE FROM scrape_cursors WHERE source=?", (source,))
+    else:
+        conn.execute("DELETE FROM scrape_cursors")
+    conn.commit()
+
+
+def save_results(conn: sqlite3.Connection, entries: list[dict],
+                 scraped_at: str, window_days: int):
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=window_days)).isoformat()
+    for e in entries:
+        url = e["job_url"]
+        conn.execute(
+            "INSERT OR IGNORE INTO seen_urls (url, first_seen) VALUES (?, ?)",
+            (url, scraped_at))
+        existing = conn.execute(
+            "SELECT scraped_at FROM jobs WHERE job_url=?", (url,)).fetchone()
+        sa = existing[0] if existing else scraped_at
+        conn.execute(
+            """INSERT OR REPLACE INTO jobs
+               (job_url, source, title, company, location, date_posted,
+                scraped_at, description, company_logo, salary, min_experience_years)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (url, e["source"], e.get("title"), e.get("company"),
+             e.get("location"), e.get("date_posted"), sa,
+             e.get("description"), e.get("company_logo"), e.get("salary"),
+             e.get("min_experience_years")))
+    conn.execute("DELETE FROM jobs WHERE scraped_at < ?", (cutoff,))
+    conn.commit()
+
+
+def export_json(conn: sqlite3.Connection, scraped_at: str):
+    rows = conn.execute(
+        """SELECT job_url, source, title, company, location, date_posted,
+                  scraped_at, description, company_logo, salary, min_experience_years
+           FROM jobs ORDER BY scraped_at DESC, date_posted DESC"""
+    ).fetchall()
+    cols = ["job_url", "source", "title", "company", "location", "date_posted",
+            "scraped_at", "description", "company_logo", "salary",
+            "min_experience_years"]
+    jobs = [dict(zip(cols, row)) for row in rows]
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DATA_FILE.write_text(json.dumps(
+        {"last_updated": scraped_at, "jobs": jobs},
+        indent=1, ensure_ascii=False))
+    print(f"Exported {len(jobs)} jobs to {DATA_FILE}", flush=True)
 
 
 def clean(value):
@@ -157,7 +300,7 @@ def salary_from_description(desc: str) -> str | None:
 # ---------- LinkedIn (python-jobspy) ----------
 
 def run_linkedin_search(search_term: str, location: str, hours_old: int,
-                        results_wanted: int) -> pd.DataFrame:
+                        results_wanted: int, offset: int = 0) -> pd.DataFrame:
     """Run one LinkedIn search, retrying once with backoff. Returns an empty
     DataFrame on total failure so a single bad search never kills the run."""
     for attempt in (1, 2):
@@ -169,26 +312,38 @@ def run_linkedin_search(search_term: str, location: str, hours_old: int,
                 results_wanted=results_wanted,
                 hours_old=hours_old,
                 linkedin_fetch_description=True,
+                offset=offset,
             )
-            print(f"  [{search_term!r} @ {location!r}] {len(df)} jobs")
+            print(f"  [{search_term!r} @ {location!r} offset={offset}] {len(df)} jobs", flush=True)
             return df
         except Exception as e:
-            print(f"  [{search_term!r} @ {location!r}] attempt {attempt} failed: {e}")
+            print(f"  [{search_term!r} @ {location!r}] attempt {attempt} failed: {e}", flush=True)
             if attempt == 1:
                 time.sleep(RETRY_DELAY_SECONDS)
     return pd.DataFrame()
 
 
-def scrape_linkedin(cfg: dict, scraped_at: str, hours_override: int | None) -> list[dict]:
+def scrape_linkedin(cfg: dict, scraped_at: str, hours_override: int | None,
+                    batch_size: int | None = None,
+                    offsets: dict[str, int] | None = None,
+                    ) -> tuple[list[dict], dict[str, int]]:
+    """Returns (entries, updated_offsets) where updated_offsets maps each
+    'term|location' key to the next offset to use on a subsequent call."""
     hours_old = hours_override or cfg.get("hours_old", 24)
+    results_wanted = batch_size or cfg.get("batch_size", cfg.get("results_wanted", 50))
+    offsets = offsets or {}
+    new_offsets = {}
     frames = []
     for term in cfg.get("search_terms", []):
         for loc in cfg.get("locations", []):
-            frames.append(run_linkedin_search(
-                term, loc, hours_old, cfg.get("results_wanted", 50)))
+            key = f"{term}|{loc}"
+            offset = offsets.get(key, 0)
+            df = run_linkedin_search(term, loc, hours_old, results_wanted, offset)
+            frames.append(df)
+            new_offsets[key] = offset + (len(df) if not df.empty else results_wanted)
     non_empty = [f for f in frames if not f.empty]
     if not non_empty:
-        return []
+        return [], new_offsets
     merged = pd.concat(non_empty, ignore_index=True)
     merged = merged.drop_duplicates(subset="job_url", keep="first")
 
@@ -217,7 +372,7 @@ def scrape_linkedin(cfg: dict, scraped_at: str, hours_override: int | None) -> l
             "salary": salary,
             "min_experience_years": None,
         })
-    return entries
+    return entries, new_offsets
 
 
 # ---------- Hiring.Cafe ----------
@@ -237,7 +392,7 @@ def fetch_hiringcafe_page(search_state: dict, page: int) -> dict | None:
                 raise ValueError("no __NEXT_DATA__ in response")
             return json.loads(m.group(1))["props"]["pageProps"]
         except Exception as e:
-            print(f"  [hiring.cafe page {page}] attempt {attempt} failed: {e}")
+            print(f"  [hiring.cafe page {page}] attempt {attempt} failed: {e}", flush=True)
             if attempt == 1:
                 time.sleep(RETRY_DELAY_SECONDS)
     return None
@@ -309,18 +464,24 @@ def hc_logo(company: dict) -> str | None:
     return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
 
 
-def scrape_hiringcafe(cfg: dict, scraped_at: str) -> list[dict]:
+def scrape_hiringcafe(cfg: dict, scraped_at: str,
+                      start_page: int = 0,
+                      pages_to_fetch: int | None = None,
+                      ) -> tuple[list[dict], int]:
+    """Returns (entries, next_page) where next_page is the page to resume from."""
     search_state = dict(cfg.get("search_state", {}))
     search_state["dateFetchedPastNDays"] = cfg.get("days_old", 1)
+    max_pages = pages_to_fetch or cfg.get("max_pages", 10)
 
     entries, seen = [], set()
-    for page in range(cfg.get("max_pages", 10)):
+    last_page = start_page
+    for page in range(start_page, start_page + max_pages):
         props = fetch_hiringcafe_page(search_state, page)
         if props is None:
             break
         hits = props.get("ssrHits") or []
         print(f"  [hiring.cafe page {page}] {len(hits)} jobs "
-              f"(total reported: {props.get('ssrTotalCount')})")
+              f"(total reported: {props.get('ssrTotalCount')})", flush=True)
         for hit in hits:
             job_url = hit.get("apply_url")
             if not job_url or job_url in seen or hit.get("is_expired"):
@@ -353,10 +514,11 @@ def scrape_hiringcafe(cfg: dict, scraped_at: str) -> list[dict]:
                 "salary": hc_salary(v5),
                 "min_experience_years": yoe,
             })
+        last_page = page + 1
         if props.get("ssrIsLastPage") or not hits:
             break
         time.sleep(1)
-    return entries
+    return entries, last_page
 
 
 # ---------- Filtering / persistence ----------
@@ -375,26 +537,14 @@ def passes_filters(entry: dict, max_years: int, blocked: set[str]) -> bool:
     return True
 
 
-def load_existing() -> list[dict]:
-    if DATA_FILE.exists():
-        try:
-            return json.loads(DATA_FILE.read_text()).get("jobs", [])
-        except (json.JSONDecodeError, AttributeError):
-            print("  warning: existing jobs.json unreadable, starting fresh")
-    return []
-
-
-def within_window(job: dict, cutoff: datetime) -> bool:
-    try:
-        return datetime.fromisoformat(job["scraped_at"]) >= cutoff
-    except (KeyError, ValueError):
-        return False
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hours-old", type=int, default=None,
                         help="override linkedin hours_old from config.json")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="override linkedin batch_size from config.json")
+    parser.add_argument("--continue", dest="resume", action="store_true",
+                        help="resume from stored offsets instead of starting fresh")
     parser.add_argument("--skip-linkedin", action="store_true")
     parser.add_argument("--skip-hiringcafe", action="store_true")
     args = parser.parse_args()
@@ -403,46 +553,56 @@ def main():
     now = datetime.now(timezone.utc)
     scraped_at = now.isoformat(timespec="seconds")
 
+    conn = init_db()
+    migrate_from_json(conn)
+    seen_urls = load_seen_urls(conn)
+
+    if not args.resume:
+        reset_cursors(conn)
+
     new_entries = []
+
     hc_cfg = cfg.get("hiringcafe", {})
     if hc_cfg.get("enabled", True) and not args.skip_hiringcafe:
-        print("Scraping Hiring.Cafe...")
-        new_entries += scrape_hiringcafe(hc_cfg, scraped_at)
+        start_page = get_cursor(conn, "hiringcafe", "default") if args.resume else 0
+        print(f"Scraping Hiring.Cafe (from page {start_page})...", flush=True)
+        hc_entries, next_page = scrape_hiringcafe(hc_cfg, scraped_at,
+                                                  start_page=start_page)
+        new_entries += hc_entries
+        update_cursor(conn, "hiringcafe", "default", next_page)
+
     li_cfg = cfg.get("linkedin", {})
     if li_cfg.get("enabled", True) and not args.skip_linkedin:
-        print("Scraping LinkedIn...")
-        new_entries += scrape_linkedin(li_cfg, scraped_at, args.hours_old)
+        li_offsets = {}
+        if args.resume:
+            for term in li_cfg.get("search_terms", []):
+                for loc in li_cfg.get("locations", []):
+                    key = f"{term}|{loc}"
+                    li_offsets[key] = get_cursor(conn, "linkedin", key)
+        print("Scraping LinkedIn...", flush=True)
+        li_entries, new_offsets = scrape_linkedin(
+            li_cfg, scraped_at, args.hours_old,
+            batch_size=args.batch_size, offsets=li_offsets)
+        new_entries += li_entries
+        for key, val in new_offsets.items():
+            update_cursor(conn, "linkedin", key, val)
+
+    conn.commit()
+
+    before_dedup = len(new_entries)
+    new_entries = [e for e in new_entries if e["job_url"] not in seen_urls]
+    print(f"Fetched {before_dedup} jobs, {len(new_entries)} after dedup "
+          f"({before_dedup - len(new_entries)} already seen)", flush=True)
 
     max_years = cfg.get("max_experience_years", 1)
     blocked = {c.strip().lower() for c in cfg.get("blocked_companies", [])}
     kept_entries = [e for e in new_entries
                     if passes_filters(e, max_years, blocked)]
-    print(f"Fetched {len(new_entries)} unique jobs, "
-          f"{len(kept_entries)} after experience/blocklist filters")
+    print(f"  {len(kept_entries)} after experience/blocklist filters", flush=True)
 
-    existing = load_existing()
-    # Re-fetched jobs keep their original scraped_at so "N hours ago" and
-    # feed order stay stable across runs.
-    first_seen = {j.get("job_url"): j.get("scraped_at") for j in existing}
-    for e in kept_entries:
-        prior = first_seen.get(e["job_url"])
-        if prior:
-            e["scraped_at"] = prior
-    seen_urls = {j["job_url"] for j in kept_entries}
-    kept_old = [j for j in existing if j.get("job_url") not in seen_urls
-                and passes_filters(j, max_years, blocked)]
-
-    cutoff = now - timedelta(days=cfg.get("window_days", 7))
-    all_jobs = kept_entries + [j for j in kept_old if within_window(j, cutoff)]
-    all_jobs.sort(key=lambda j: (j.get("scraped_at") or "",
-                                 j.get("date_posted") or ""), reverse=True)
-
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    DATA_FILE.write_text(json.dumps(
-        {"last_updated": scraped_at, "jobs": all_jobs},
-        indent=1, ensure_ascii=False,
-    ))
-    print(f"Wrote {len(all_jobs)} jobs to {DATA_FILE}")
+    save_results(conn, kept_entries, scraped_at, cfg.get("window_days", 7))
+    export_json(conn, scraped_at)
+    conn.close()
 
 
 if __name__ == "__main__":

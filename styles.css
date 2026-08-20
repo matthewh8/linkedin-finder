@@ -108,11 +108,65 @@ body {
 }
 
 .last-updated {
-  margin-left: auto;
   font-size: 12px;
   color: var(--text-mid);
   white-space: nowrap;
 }
+
+.topbar-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.topbar-btn {
+  padding: 6px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--blue);
+  background: var(--blue);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.topbar-btn:hover { background: var(--blue-dark); border-color: var(--blue-dark); }
+.topbar-btn:disabled { opacity: 0.6; cursor: default; }
+
+.topbar-btn-secondary {
+  background: transparent;
+  color: var(--blue);
+}
+
+.topbar-btn-secondary:hover {
+  background: var(--blue-tint);
+}
+
+/* ---------- Load more ---------- */
+
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 16px 12px 24px;
+}
+
+.load-more-btn {
+  padding: 8px 28px;
+  border-radius: 20px;
+  border: 1px solid var(--blue);
+  color: var(--blue);
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.load-more-btn:hover { background: var(--blue-tint); }
+.load-more-btn:disabled { opacity: 0.6; cursor: default; }
 
 /* ---------- Filter chips ---------- */
 
