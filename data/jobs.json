@@ -1,6 +1,19 @@
 {
- "last_updated": "2026-08-22T02:51:35+00:00",
+ "last_updated": "2026-08-22T04:30:16+00:00",
  "jobs": [
+  {
+   "job_url": "https://recruitingbypaycor.com/career/JobIntroduction.action?clientId=8a7883d0872f3fce01872f6385e00032&id=8a78859e9fd3bb2501a0267acea73651&source=&lang=en",
+   "source": "hiringcafe",
+   "title": "Associate Software V&V Engineer",
+   "company": "Sciton",
+   "location": "Palo Alto, California, United States",
+   "date_posted": "2026-08-21",
+   "scraped_at": "2026-08-22T04:30:16+00:00",
+   "description": "**Workplace:** Onsite\n\n**Commitment:** Full Time\n\n**Seniority:** No Prior Experience Required\n\n**Min experience:** 0 years\n\n**Company size:** 209 employees\n\n### Requirements\nBachelor's degree in software engineering, computer science, or related field; 0–2 years in software QA or validation; regulated-environment knowledge; technical writing, communication, critical thinking, problem-solving, and collaboration skills.\n\n### Role activities\n- developing test plans\n- identifying defects\n- performing risk analysis\n\n### Tech mentioned\n510(k), ISO, IEC 62304\n\n### Perks mentioned\n401k matching\n\n*Summary generated from Hiring.Cafe structured data — see the full posting via the apply link.*",
+   "company_logo": "https://www.google.com/s2/favicons?domain=sciton.com&sz=128",
+   "salary": "$70K – $80K/yr",
+   "min_experience_years": 0.0
+  },
   {
    "job_url": "https://careers.garmin.com/jobs/19680?lang=en-us",
    "source": "hiringcafe",
