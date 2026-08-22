@@ -13,6 +13,7 @@ import re
 import sqlite3
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,8 +27,21 @@ DATA_FILE = ROOT / "data" / "jobs.json"
 DB_FILE = ROOT / "data" / "jobs.db"
 
 RETRY_DELAY_SECONDS = 30
+HC_RETRY_DELAY_SECONDS = 5
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
+_START_TIME = None
+
+
+def progress(msg: str, *, newline: bool = True):
+    elapsed = ""
+    if _START_TIME is not None:
+        secs = time.time() - _START_TIME
+        mins, secs = divmod(int(secs), 60)
+        elapsed = f"[{mins:02d}:{secs:02d}] "
+    end = "\n" if newline else ""
+    print(f"{elapsed}{msg}", end=end, flush=True)
 
 
 def load_config() -> dict:
@@ -194,7 +208,7 @@ _WORD_NUMS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
 # "3+ years", "2-4 yrs", "two years", "1 to 3 years" — group 1 is the low end.
 _YOE_RE = re.compile(
     r"\b(\d{1,2}|" + "|".join(_WORD_NUMS) + r")"
-    r"(?:\s*(?:-|–|—|\bto\b)\s*\d{1,2})?\s*\+?\s*(?:years?|yrs?)\b",
+    r"(?:\s*(?:-|–|—|\bto\b)\s*\d{1,2})?\s*\\?\+?\s*(?:years?|yrs?)\b",
     re.IGNORECASE)
 
 
@@ -300,11 +314,19 @@ def salary_from_description(desc: str) -> str | None:
 # ---------- LinkedIn (python-jobspy) ----------
 
 def run_linkedin_search(search_term: str, location: str, hours_old: int,
-                        results_wanted: int, offset: int = 0) -> pd.DataFrame:
+                        results_wanted: int, offset: int = 0,
+                        step: str = "") -> pd.DataFrame:
     """Run one LinkedIn search, retrying once with backoff. Returns an empty
     DataFrame on total failure so a single bad search never kills the run."""
+    short_loc = location.split(",")[0]
     for attempt in (1, 2):
         try:
+            if attempt == 1:
+                progress(f"  {step}Searching \"{search_term}\" in {short_loc} "
+                         f"(offset {offset})...")
+            else:
+                progress(f"  {step}Retrying \"{search_term}\" in {short_loc} "
+                         f"(waiting {RETRY_DELAY_SECONDS}s)...")
             df = scrape_jobs(
                 site_name=["linkedin"],
                 search_term=search_term,
@@ -314,10 +336,10 @@ def run_linkedin_search(search_term: str, location: str, hours_old: int,
                 linkedin_fetch_description=True,
                 offset=offset,
             )
-            print(f"  [{search_term!r} @ {location!r} offset={offset}] {len(df)} jobs", flush=True)
+            progress(f"    -> {len(df)} jobs found")
             return df
         except Exception as e:
-            print(f"  [{search_term!r} @ {location!r}] attempt {attempt} failed: {e}", flush=True)
+            progress(f"    -> attempt {attempt} failed: {e}")
             if attempt == 1:
                 time.sleep(RETRY_DELAY_SECONDS)
     return pd.DataFrame()
@@ -334,17 +356,38 @@ def scrape_linkedin(cfg: dict, scraped_at: str, hours_override: int | None,
     offsets = offsets or {}
     new_offsets = {}
     frames = []
-    for term in cfg.get("search_terms", []):
-        for loc in cfg.get("locations", []):
+    terms = cfg.get("search_terms", [])
+    locations = cfg.get("locations", [])
+    total_searches = len(terms) * len(locations)
+
+    searches = []
+    for i, term in enumerate(terms):
+        for j, loc in enumerate(locations):
             key = f"{term}|{loc}"
             offset = offsets.get(key, 0)
-            df = run_linkedin_search(term, loc, hours_old, results_wanted, offset)
+            num = i * len(locations) + j + 1
+            step = f"[{num}/{total_searches}] "
+            searches.append((key, term, loc, offset, step))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {
+            pool.submit(run_linkedin_search, term, loc, hours_old,
+                        results_wanted, offset, step): key
+            for key, term, loc, offset, step in searches
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            df = future.result()
             frames.append(df)
+            offset = next(o for k, _, _, o, _ in searches if k == key)
             new_offsets[key] = offset + (len(df) if not df.empty else results_wanted)
     non_empty = [f for f in frames if not f.empty]
     if not non_empty:
         return [], new_offsets
-    merged = pd.concat(non_empty, ignore_index=True)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        merged = pd.concat(non_empty, ignore_index=True)
     merged = merged.drop_duplicates(subset="job_url", keep="first")
 
     entries = []
@@ -384,6 +427,8 @@ def fetch_hiringcafe_page(search_state: dict, page: int) -> dict | None:
            + urllib.parse.quote(json.dumps(search_state)) + f"&page={page}")
     for attempt in (1, 2):
         try:
+            if attempt == 2:
+                progress(f"  Retrying page {page} (waiting {HC_RETRY_DELAY_SECONDS}s)...")
             r = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=60)
             r.raise_for_status()
             m = re.search(r'<script id="__NEXT_DATA__" type="application/json">'
@@ -392,9 +437,9 @@ def fetch_hiringcafe_page(search_state: dict, page: int) -> dict | None:
                 raise ValueError("no __NEXT_DATA__ in response")
             return json.loads(m.group(1))["props"]["pageProps"]
         except Exception as e:
-            print(f"  [hiring.cafe page {page}] attempt {attempt} failed: {e}", flush=True)
+            progress(f"    -> page {page} attempt {attempt} failed: {e}")
             if attempt == 1:
-                time.sleep(RETRY_DELAY_SECONDS)
+                time.sleep(HC_RETRY_DELAY_SECONDS)
     return None
 
 
@@ -475,49 +520,76 @@ def scrape_hiringcafe(cfg: dict, scraped_at: str,
 
     entries, seen = [], set()
     last_page = start_page
-    for page in range(start_page, start_page + max_pages):
-        props = fetch_hiringcafe_page(search_state, page)
-        if props is None:
+    batch_size = 3
+    page = start_page
+
+    while page < start_page + max_pages:
+        batch_end = min(page + batch_size, start_page + max_pages)
+        batch_pages = list(range(page, batch_end))
+        progress(f"  Fetching pages {batch_pages[0]}–{batch_pages[-1]} "
+                 f"({page - start_page + 1}–{batch_end - start_page}/{max_pages})...")
+
+        with ThreadPoolExecutor(max_workers=batch_size) as pool:
+            future_to_page = {
+                pool.submit(fetch_hiringcafe_page, search_state, p): p
+                for p in batch_pages
+            }
+            results = {}
+            for future in as_completed(future_to_page):
+                p = future_to_page[future]
+                results[p] = future.result()
+
+        stop = False
+        for p in batch_pages:
+            props = results[p]
+            if props is None:
+                progress(f"    -> page {p} returned no data, stopping")
+                stop = True
+                break
+            hits = props.get("ssrHits") or []
+            total_count = props.get("ssrTotalCount", "?")
+            progress(f"    -> page {p}: {len(hits)} jobs (total available: {total_count})")
+            for hit in hits:
+                job_url = hit.get("apply_url")
+                if not job_url or job_url in seen or hit.get("is_expired"):
+                    continue
+                seen.add(job_url)
+                v5 = hit.get("v5_processed_job_data") or {}
+                if "Required" in (v5.get("masters_degree_requirement"),
+                                  v5.get("doctorate_degree_requirement")):
+                    continue
+                company = hit.get("enriched_company_data") or {}
+                info = hit.get("job_information") or {}
+                location = v5.get("formatted_workplace_location") or ""
+                if v5.get("workplace_type") == "Remote" and \
+                        "remote" not in location.lower():
+                    location = (location + " (Remote)").strip()
+                publish = v5.get("estimated_publish_date")
+                yoe = v5.get("min_industry_and_role_yoe")
+                if v5.get("is_min_industry_and_role_yoe_not_mentioned"):
+                    yoe = None
+                entries.append({
+                    "source": "hiringcafe",
+                    "title": info.get("title") or v5.get("core_job_title"),
+                    "company": company.get("name") or hit.get("board_token"),
+                    "location": location or None,
+                    "date_posted": publish[:10] if publish else None,
+                    "scraped_at": scraped_at,
+                    "job_url": job_url,
+                    "description": hc_description(v5, company),
+                    "company_logo": hc_logo(company),
+                    "salary": hc_salary(v5),
+                    "min_experience_years": yoe,
+                })
+            last_page = p + 1
+            if props.get("ssrIsLastPage") or not hits:
+                stop = True
+                break
+
+        if stop:
             break
-        hits = props.get("ssrHits") or []
-        print(f"  [hiring.cafe page {page}] {len(hits)} jobs "
-              f"(total reported: {props.get('ssrTotalCount')})", flush=True)
-        for hit in hits:
-            job_url = hit.get("apply_url")
-            if not job_url or job_url in seen or hit.get("is_expired"):
-                continue
-            seen.add(job_url)
-            v5 = hit.get("v5_processed_job_data") or {}
-            if "Required" in (v5.get("masters_degree_requirement"),
-                              v5.get("doctorate_degree_requirement")):
-                continue
-            company = hit.get("enriched_company_data") or {}
-            info = hit.get("job_information") or {}
-            location = v5.get("formatted_workplace_location") or ""
-            if v5.get("workplace_type") == "Remote" and \
-                    "remote" not in location.lower():
-                location = (location + " (Remote)").strip()
-            publish = v5.get("estimated_publish_date")
-            yoe = v5.get("min_industry_and_role_yoe")
-            if v5.get("is_min_industry_and_role_yoe_not_mentioned"):
-                yoe = None
-            entries.append({
-                "source": "hiringcafe",
-                "title": info.get("title") or v5.get("core_job_title"),
-                "company": company.get("name") or hit.get("board_token"),
-                "location": location or None,
-                "date_posted": publish[:10] if publish else None,
-                "scraped_at": scraped_at,
-                "job_url": job_url,
-                "description": hc_description(v5, company),
-                "company_logo": hc_logo(company),
-                "salary": hc_salary(v5),
-                "min_experience_years": yoe,
-            })
-        last_page = page + 1
-        if props.get("ssrIsLastPage") or not hits:
-            break
-        time.sleep(1)
+        page = batch_end
+
     return entries, last_page
 
 
@@ -549,60 +621,89 @@ def main():
     parser.add_argument("--skip-hiringcafe", action="store_true")
     args = parser.parse_args()
 
+    global _START_TIME
+    _START_TIME = time.time()
+
     cfg = load_config()
     now = datetime.now(timezone.utc)
     scraped_at = now.isoformat(timespec="seconds")
 
+    sources = []
+    hc_cfg = cfg.get("hiringcafe", {})
+    li_cfg = cfg.get("linkedin", {})
+    if hc_cfg.get("enabled", True) and not args.skip_hiringcafe:
+        sources.append("Hiring.Cafe")
+    if li_cfg.get("enabled", True) and not args.skip_linkedin:
+        sources.append("LinkedIn")
+
+    progress(f"Starting scrape at {now.strftime('%Y-%m-%d %H:%M UTC')}")
+    progress(f"Sources: {', '.join(sources) or 'none'}")
+
     conn = init_db()
     migrate_from_json(conn)
     seen_urls = load_seen_urls(conn)
+    progress(f"Database loaded ({len(seen_urls)} previously seen URLs)")
 
     if not args.resume:
         reset_cursors(conn)
 
     new_entries = []
 
-    hc_cfg = cfg.get("hiringcafe", {})
-    if hc_cfg.get("enabled", True) and not args.skip_hiringcafe:
+    if "Hiring.Cafe" in sources:
         start_page = get_cursor(conn, "hiringcafe", "default") if args.resume else 0
-        print(f"Scraping Hiring.Cafe (from page {start_page})...", flush=True)
+        max_pages = hc_cfg.get("max_pages", 10)
+        progress(f"--- Hiring.Cafe (pages {start_page}..{start_page + max_pages - 1}) ---")
         hc_entries, next_page = scrape_hiringcafe(hc_cfg, scraped_at,
                                                   start_page=start_page)
+        progress(f"Hiring.Cafe done: {len(hc_entries)} jobs collected")
         new_entries += hc_entries
         update_cursor(conn, "hiringcafe", "default", next_page)
 
-    li_cfg = cfg.get("linkedin", {})
-    if li_cfg.get("enabled", True) and not args.skip_linkedin:
+    if "LinkedIn" in sources:
         li_offsets = {}
         if args.resume:
             for term in li_cfg.get("search_terms", []):
                 for loc in li_cfg.get("locations", []):
                     key = f"{term}|{loc}"
                     li_offsets[key] = get_cursor(conn, "linkedin", key)
-        print("Scraping LinkedIn...", flush=True)
+        terms = li_cfg.get("search_terms", [])
+        locs = li_cfg.get("locations", [])
+        progress(f"--- LinkedIn ({len(terms)} terms x {len(locs)} locations "
+                 f"= {len(terms) * len(locs)} searches) ---")
         li_entries, new_offsets = scrape_linkedin(
             li_cfg, scraped_at, args.hours_old,
             batch_size=args.batch_size, offsets=li_offsets)
+        progress(f"LinkedIn done: {len(li_entries)} jobs collected")
         new_entries += li_entries
         for key, val in new_offsets.items():
             update_cursor(conn, "linkedin", key, val)
 
     conn.commit()
 
+    progress(f"--- Filtering ---")
     before_dedup = len(new_entries)
     new_entries = [e for e in new_entries if e["job_url"] not in seen_urls]
-    print(f"Fetched {before_dedup} jobs, {len(new_entries)} after dedup "
-          f"({before_dedup - len(new_entries)} already seen)", flush=True)
+    progress(f"Dedup: {before_dedup} fetched, {before_dedup - len(new_entries)} "
+             f"already seen, {len(new_entries)} new")
 
     max_years = cfg.get("max_experience_years", 1)
     blocked = {c.strip().lower() for c in cfg.get("blocked_companies", [])}
     kept_entries = [e for e in new_entries
                     if passes_filters(e, max_years, blocked)]
-    print(f"  {len(kept_entries)} after experience/blocklist filters", flush=True)
+    filtered_out = len(new_entries) - len(kept_entries)
+    progress(f"Filters: {filtered_out} removed (experience/degree/blocklist), "
+             f"{len(kept_entries)} kept")
 
-    save_results(conn, kept_entries, scraped_at, cfg.get("window_days", 7))
-    export_json(conn, scraped_at)
+    if kept_entries:
+        save_results(conn, kept_entries, scraped_at, cfg.get("window_days", 7))
+        export_json(conn, scraped_at)
+    else:
+        progress("No new jobs to save, skipping export")
     conn.close()
+
+    elapsed = time.time() - _START_TIME
+    mins, secs = divmod(int(elapsed), 60)
+    progress(f"Done in {mins}m {secs}s")
 
 
 if __name__ == "__main__":

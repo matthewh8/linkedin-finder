@@ -2,10 +2,11 @@ name: Scrape jobs and deploy
 
 on:
   schedule:
-    - cron: "0 */2 * * *"   # every 2 hours, on the hour (UTC)
-  workflow_dispatch: {}      # allow manual runs from the Actions tab
+    # Hourly 8 AM – 3 PM PST (Mon–Fri). UTC = PST + 8.
+    - cron: "0 16-23 * * 1-5"
+  workflow_dispatch: {}
   push:
-    branches: [main]         # deploy on code changes too
+    branches: [main]
 
 permissions:
   contents: write
