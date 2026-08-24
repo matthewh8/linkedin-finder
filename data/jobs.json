@@ -1,6 +1,32 @@
 {
- "last_updated": "2026-08-24T20:35:47+00:00",
+ "last_updated": "2026-08-24T21:34:28+00:00",
  "jobs": [
+  {
+   "job_url": "https://clients.njoyn.com/CORP/xweb/xweb.asp?CLID=21001&page=jobdetails&JobID=J0826-1618&BRID=1327982",
+   "source": "hiringcafe",
+   "title": "Software Developer – Entry Level",
+   "company": "CGI",
+   "location": "Westerville, Ohio, United States",
+   "date_posted": "2026-08-24",
+   "scraped_at": "2026-08-24T21:34:28+00:00",
+   "description": "**Workplace:** Onsite\n\n**Commitment:** Full Time, Internship\n\n**Seniority:** No Prior Experience Required\n\n**About:** Provides information technology and business consulting services.\n\n### Requirements\nBachelor’s degree in computer science, software engineering, or related field; foundational development experience; Java, C#, .NET, Python, C++, or JavaScript; frontend framework, SQL, REST API, SDLC, and cloud knowledge; unrestricted U.S. work authorization.\n\n### Role activities\n- developing features\n- building APIs\n- debugging applications\n\n### Tech mentioned\nJava, C#, .NET, Python, C++, JavaScript, React, Angular, SQL, REST APIs, Agile, generative AI, cloud platforms, DevOps, Microsoft?, AI-assisted development tools, databases\n\n*Summary generated from Hiring.Cafe structured data — see the full posting via the apply link.*",
+   "company_logo": "https://www.google.com/s2/favicons?domain=cgi.com&sz=128",
+   "salary": "$52,400 – $91,700/yr",
+   "min_experience_years": null
+  },
+  {
+   "job_url": "https://www.linkedin.com/jobs/view/4457182351",
+   "source": "linkedin",
+   "title": "AI Engineer, Entry Level",
+   "company": "Jobright.ai",
+   "location": "San Francisco, CA",
+   "date_posted": null,
+   "scraped_at": "2026-08-24T21:34:28+00:00",
+   "description": "Jobright is your personal AI job search agent that transforms the way you do job search from solo, time\\-consuming efforts to a fast, expert\\-guided journey, simplifying every job search step and accelerating your route to the best job outcomes. As an AI Engineer, Entry Level, you will work onsite with engineers, researchers, and product leaders to build and evaluate AI capabilities used by real job seekers.\n \n\n\n\n  \n\n\n\n\n\n Why Join Us\n \n\n\n\n  \n\n\n\n\n\n • Build real, production AI agents used by real users\n \n\n\n\n • High ownership and impact\n \n\n\n\n • Work at the intersection of AI, agents, and product\n \n\n\n\n • Shape how people experience AI\\-driven job search\n \n\n\n\n  \n\n\n\n\n\n Responsibilities\n \n\n\n\n  \n\n\n\n\n\n • Contribute to AI and machine\\-learning features for search, recommendations, and personalisation\n \n\n\n\n • Build data preparation, evaluation, and experimentation workflows\n \n\n\n\n • Work with prompts, embeddings, retrieval, structured outputs, and LLM APIs\n \n\n\n\n • Integrate AI capabilities into reliable product and backend systems\n \n\n\n\n • Investigate model quality, latency, and failure cases\n \n\n\n\n • Collaborate closely with engineering, product, and data teams onsite\n \n\n\n\n Qualification\n \n\n\n\n  \n\n\n\n\n\n Required\n \n\n\n\n  \n\n\n\n\n\n • Bachelor's or master's degree in Computer Science, Artificial Intelligence, Machine Learning, or a related field\n \n\n\n\n • Strong Python programming skills\n \n\n\n\n • Understanding of machine learning, NLP, or information retrieval fundamentals\n \n\n\n\n • Familiarity with APIs, Git, debugging, and basic software engineering practices\n \n\n\n\n • Ability to work onsite in the SF Bay Area\n \n\n\n\n  \n\n\n\n\n\n Preferred\n \n\n\n\n  \n\n\n\n\n\n • Experience with LLM applications, RAG, embeddings, or model evaluation\n \n\n\n\n • Familiarity with PyTorch, TensorFlow, scikit\\-learn, or cloud AI services\n \n\n\n\n • Experience building AI prototypes or data pipelines\n \n\n\n\n • Interest in AI agents, recommendation systems, or search technology",
+   "company_logo": "https://media.licdn.com/dms/image/v2/D560BAQENJWU02sl4ZA/company-logo_100_100/company-logo_100_100/0/1701315479200/jobright_ai_logo?e=2147483647&v=beta&t=Qp5ZNbGfD1Y9tuchwA2EOIb0gsCDK-vB4qlQrF4r5BA",
+   "salary": null,
+   "min_experience_years": null
+  },
   {
    "job_url": "https://job-boards.greenhouse.io/sage49/jobs/6131191004",
    "source": "hiringcafe",
