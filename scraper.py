@@ -172,12 +172,18 @@ def save_results(conn: sqlite3.Connection, entries: list[dict],
     conn.commit()
 
 
-def export_json(conn: sqlite3.Connection, scraped_at: str):
-    rows = conn.execute(
-        """SELECT job_url, source, title, company, location, date_posted,
-                  scraped_at, description, company_logo, salary, min_experience_years
-           FROM jobs ORDER BY scraped_at DESC, date_posted DESC"""
-    ).fetchall()
+def export_json(conn: sqlite3.Connection, scraped_at: str,
+                max_per_source: int = 25):
+    sources = [r[0] for r in conn.execute(
+        "SELECT DISTINCT source FROM jobs").fetchall()]
+    rows = []
+    for src in sources:
+        rows.extend(conn.execute(
+            """SELECT job_url, source, title, company, location, date_posted,
+                      scraped_at, description, company_logo, salary, min_experience_years
+               FROM jobs WHERE source=?
+               ORDER BY scraped_at DESC, date_posted DESC LIMIT ?""",
+            (src, max_per_source)).fetchall())
     cols = ["job_url", "source", "title", "company", "location", "date_posted",
             "scraped_at", "description", "company_logo", "salary",
             "min_experience_years"]
@@ -214,6 +220,14 @@ _YOE_RE = re.compile(
 
 _INTERN_RE = re.compile(r"\bintern(?:ship|ships|s)?\b|\bco-?op\b", re.IGNORECASE)
 
+_ACTIVITY_RE = re.compile(
+    r"(?:years?|yrs?)\s+(?:of\s+)?"
+    r"(?:developing|building|working|designing|engineering|managing|"
+    r"leading|programming|coding|creating|implementing|architecting|"
+    r"shipping|deploying|maintaining|testing|debugging|"
+    r"in\s+[a-z]|of\s+[a-z]|with\s+[a-z])",
+    re.IGNORECASE)
+
 
 def mentions_excess_experience(text: str, max_years: int) -> bool:
     """True if the text mentions a years-of-experience figure whose low end
@@ -229,7 +243,9 @@ def mentions_excess_experience(text: str, max_years: int) -> bool:
             low = int(raw)
         window = text[max(0, m.start() - 70):m.end() + 70].lower()
         if "experience" not in window and "exp." not in window:
-            continue  # "2 year degree", "401k after 1 year", etc.
+            after = text[m.start():m.end() + 50].lower()
+            if not _ACTIVITY_RE.search(after):
+                continue
         if _INTERN_RE.search(window):
             continue  # "1+ years of internship experience" is fine
         if low > max_years:
@@ -619,6 +635,9 @@ def main():
                         help="resume from stored offsets instead of starting fresh")
     parser.add_argument("--skip-linkedin", action="store_true")
     parser.add_argument("--skip-hiringcafe", action="store_true")
+    parser.add_argument("--source", action="append",
+                        choices=["linkedin", "hiringcafe"],
+                        help="run only these sources (ignores enabled setting)")
     args = parser.parse_args()
 
     global _START_TIME
@@ -631,10 +650,16 @@ def main():
     sources = []
     hc_cfg = cfg.get("hiringcafe", {})
     li_cfg = cfg.get("linkedin", {})
-    if hc_cfg.get("enabled", True) and not args.skip_hiringcafe:
-        sources.append("Hiring.Cafe")
-    if li_cfg.get("enabled", True) and not args.skip_linkedin:
-        sources.append("LinkedIn")
+    if args.source:
+        if "hiringcafe" in args.source and not args.skip_hiringcafe:
+            sources.append("Hiring.Cafe")
+        if "linkedin" in args.source and not args.skip_linkedin:
+            sources.append("LinkedIn")
+    else:
+        if hc_cfg.get("enabled", True) and not args.skip_hiringcafe:
+            sources.append("Hiring.Cafe")
+        if li_cfg.get("enabled", True) and not args.skip_linkedin:
+            sources.append("LinkedIn")
 
     progress(f"Starting scrape at {now.strftime('%Y-%m-%d %H:%M UTC')}")
     progress(f"Sources: {', '.join(sources) or 'none'}")
@@ -696,7 +721,7 @@ def main():
 
     if kept_entries:
         save_results(conn, kept_entries, scraped_at, cfg.get("window_days", 7))
-        export_json(conn, scraped_at)
+        export_json(conn, scraped_at, cfg.get("max_export_per_source", 25))
     else:
         progress("No new jobs to save, skipping export")
     conn.close()

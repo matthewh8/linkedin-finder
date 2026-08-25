@@ -20,16 +20,180 @@
       </div>
       <div class="last-updated" id="last-updated" title="When the job data was last scraped"></div>
       <div class="topbar-actions">
-        <button class="topbar-btn" id="fetch-more-btn" title="Scrape the next batch of jobs from LinkedIn and Hiring.Cafe">Fetch more</button>
-        <button class="topbar-btn topbar-btn-secondary" id="fresh-update-btn" title="Reset and scrape from the beginning">Fresh update</button>
+        <button class="topbar-btn topbar-btn-secondary" id="settings-btn" title="Scraper settings">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style="vertical-align:-2px;margin-right:4px"><path fill="currentColor" d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492ZM6.754 8a1.246 1.246 0 1 1 2.492 0 1.246 1.246 0 0 1-2.492 0Z"/><path fill="currentColor" d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.902 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.892 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.892-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319Z" transform="scale(0.875) translate(1,1)"/></svg>
+          Settings
+        </button>
+        <button class="topbar-btn" id="scrape-btn" title="Open scrape panel">Scrape</button>
       </div>
     </div>
   </header>
 
+  <div class="settings-overlay" id="settings-overlay" hidden>
+    <div class="settings-panel" id="settings-panel">
+      <div class="settings-header">
+        <span class="settings-title">Scraper Settings</span>
+        <button class="filters-close" id="settings-close" aria-label="Close settings">&times;</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-section">
+          <div class="settings-section-title">General</div>
+          <label class="settings-field">
+            <span class="settings-label">Max experience years</span>
+            <input type="number" id="cfg-max-experience" class="settings-input settings-input-sm" min="0">
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Window days</span>
+            <input type="number" id="cfg-window-days" class="settings-input settings-input-sm" min="1">
+          </label>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Hiring.Cafe</div>
+          <label class="settings-field">
+            <span class="settings-label">Enabled</span>
+            <input type="checkbox" id="cfg-hc-enabled">
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Job title query</span>
+            <input type="text" id="cfg-hc-job-title" class="settings-input" autocomplete="off">
+          </label>
+          <div class="settings-field">
+            <span class="settings-label">Seniority level</span>
+            <div class="settings-checks" id="cfg-hc-seniority">
+              <label><input type="checkbox" value="Entry Level"> Entry Level</label>
+              <label><input type="checkbox" value="No Prior Experience Required"> No Prior Experience</label>
+              <label><input type="checkbox" value="Mid Level"> Mid Level</label>
+              <label><input type="checkbox" value="Senior Level"> Senior Level</label>
+            </div>
+          </div>
+          <div class="settings-field">
+            <span class="settings-label">Bachelor's degree</span>
+            <div class="settings-checks" id="cfg-hc-bachelors-req">
+              <label><input type="checkbox" value="Required"> Required</label>
+              <label><input type="checkbox" value="Preferred"> Preferred</label>
+              <label><input type="checkbox" value="Not Mentioned"> Not Mentioned</label>
+            </div>
+          </div>
+          <div class="settings-field">
+            <span class="settings-label">Master's degree</span>
+            <div class="settings-checks" id="cfg-hc-masters-req">
+              <label><input type="checkbox" value="Required"> Required</label>
+              <label><input type="checkbox" value="Preferred"> Preferred</label>
+              <label><input type="checkbox" value="Not Mentioned"> Not Mentioned</label>
+            </div>
+          </div>
+          <label class="settings-field">
+            <span class="settings-label">Fields of study</span>
+            <input type="text" id="cfg-hc-fields-of-study" class="settings-input" placeholder="e.g. computer science, math" autocomplete="off">
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Min salary (low end)</span>
+            <input type="number" id="cfg-hc-min-salary" class="settings-input settings-input-sm" min="0" step="5000">
+          </label>
+          <div class="settings-field">
+            <span class="settings-label">Security clearances</span>
+            <div class="settings-checks" id="cfg-hc-clearances">
+              <label><input type="checkbox" value="None"> None</label>
+              <label><input type="checkbox" value="Secret"> Secret</label>
+              <label><input type="checkbox" value="Top Secret"> Top Secret</label>
+            </div>
+          </div>
+          <label class="settings-field">
+            <span class="settings-label">Transparent salaries only</span>
+            <input type="checkbox" id="cfg-hc-transparent">
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Days old</span>
+            <input type="number" id="cfg-hc-days-old" class="settings-input settings-input-sm" min="1">
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Max pages</span>
+            <input type="number" id="cfg-hc-max-pages" class="settings-input settings-input-sm" min="1">
+          </label>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">LinkedIn</div>
+          <label class="settings-field">
+            <span class="settings-label">Enabled</span>
+            <input type="checkbox" id="cfg-li-enabled">
+          </label>
+          <div class="settings-field">
+            <span class="settings-label">Search terms</span>
+            <div class="settings-field-body">
+              <div id="cfg-li-search-terms" class="settings-tag-list"></div>
+              <div class="keyword-input-row">
+                <input type="text" id="cfg-li-term-input" class="keyword-text-input" placeholder="Add search term" autocomplete="off">
+                <button class="keyword-add-btn" id="cfg-li-term-add">Add</button>
+              </div>
+            </div>
+          </div>
+          <div class="settings-field">
+            <span class="settings-label">Locations</span>
+            <div class="settings-field-body">
+              <div id="cfg-li-locations" class="settings-tag-list"></div>
+              <div class="keyword-input-row">
+                <input type="text" id="cfg-li-loc-input" class="keyword-text-input" placeholder="Add location" autocomplete="off">
+                <button class="keyword-add-btn" id="cfg-li-loc-add">Add</button>
+              </div>
+            </div>
+          </div>
+          <label class="settings-field">
+            <span class="settings-label">Hours old</span>
+            <input type="number" id="cfg-li-hours-old" class="settings-input settings-input-sm" min="1">
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Batch size</span>
+            <input type="number" id="cfg-li-batch-size" class="settings-input settings-input-sm" min="1">
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="scrape-overlay" id="scrape-overlay" hidden>
+    <div class="scrape-panel">
+      <div class="settings-header">
+        <span class="settings-title">Scrape Jobs</span>
+        <button class="filters-close" id="scrape-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="scrape-body">
+        <div class="scrape-source">
+          <div class="scrape-source-header">
+            <span class="scrape-source-icon scrape-icon-li">in</span>
+            <span class="scrape-source-name">LinkedIn</span>
+          </div>
+          <p class="scrape-hint">Scrapes listings via python-jobspy. Configure search terms and locations in Settings.</p>
+          <div class="scrape-btns">
+            <button class="scrape-action" data-sources="linkedin" data-resume="false">Fresh fetch</button>
+            <button class="scrape-action scrape-action-secondary" data-sources="linkedin" data-resume="true">Continue scrolling</button>
+          </div>
+          <pre class="scrape-log" id="scrape-log-linkedin" hidden></pre>
+        </div>
+        <div class="scrape-source">
+          <div class="scrape-source-header">
+            <span class="scrape-source-icon scrape-icon-hc">&#9749;</span>
+            <span class="scrape-source-name">Hiring.Cafe</span>
+          </div>
+          <p class="scrape-hint">Scrapes SSR search results. Configure job title, seniority, and filters in Settings.</p>
+          <div class="scrape-btns">
+            <button class="scrape-action" data-sources="hiringcafe" data-resume="false">Fresh fetch</button>
+            <button class="scrape-action scrape-action-secondary" data-sources="hiringcafe" data-resume="true">Continue scrolling</button>
+          </div>
+          <pre class="scrape-log" id="scrape-log-hiringcafe" hidden></pre>
+        </div>
+        <div class="scrape-all-section">
+          <button class="scrape-action scrape-action-all" data-sources="linkedin,hiringcafe" data-resume="false">Fetch all sources</button>
+          <pre class="scrape-log" id="scrape-log-all" hidden></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <nav class="filter-bar" aria-label="Filters">
     <div class="filter-bar-inner">
-      <span id="filter-chips" class="chip-group"></span>
-      <span class="filter-divider" aria-hidden="true"></span>
+      <select id="location-select" class="location-select" aria-label="Filter by location">
+        <option value="">All locations</option>
+      </select>
       <button class="chip chip-toggle" id="applied-toggle" title="Hide jobs you've marked as applied">Hide applied</button>
       <button class="chip chip-toggle" id="blocked-btn" title="Manage blocked companies">Blocked</button>
       <button class="chip chip-toggle" id="filters-btn" title="Keyword filters and presets">Filters</button>
@@ -110,6 +274,7 @@
           <button class="pill-btn pill-btn-danger" id="block-btn">Block company</button>
         </div>
         <hr class="detail-divider">
+        <div id="detail-experience" class="experience-callout" hidden></div>
         <h2 class="about-heading">About the job</h2>
         <div class="detail-description" id="detail-description"></div>
       </article>

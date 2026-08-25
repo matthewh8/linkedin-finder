@@ -8,7 +8,7 @@
   var state = {
     jobs: [],
     lastUpdated: null,
-    selectedLocations: [],   // [] = all; subset of location labels
+    selectedLocation: "",     // "" = all; single location label
     excludedKeywords: [],    // title substrings to hide
     presets: {},             // name -> {locations, keywords}
     query: "",
@@ -18,7 +18,7 @@
     applied: {},             // job_url -> ISO timestamp
     blocked: [],             // company names
     page: 1,
-    perPage: 20,
+    perPage: 50,
     totalJobs: 0,
     totalSeen: 0,
     hasMore: false,
@@ -41,7 +41,7 @@
     resultCount: document.getElementById("result-count"),
     lastUpdated: document.getElementById("last-updated"),
     searchInput: document.getElementById("search-input"),
-    chips: document.getElementById("filter-chips"),
+    locationSelect: document.getElementById("location-select"),
     appliedToggle: document.getElementById("applied-toggle"),
     blockedBtn: document.getElementById("blocked-btn"),
     blockedPanel: document.getElementById("blocked-panel"),
@@ -62,7 +62,12 @@
     appliedBtn: document.getElementById("applied-btn"),
     blockBtn: document.getElementById("block-btn"),
     description: document.getElementById("detail-description"),
+    experience: document.getElementById("detail-experience"),
     backBtn: document.getElementById("back-btn"),
+    settingsBtn: document.getElementById("settings-btn"),
+    settingsOverlay: document.getElementById("settings-overlay"),
+    settingsPanel: document.getElementById("settings-panel"),
+    settingsClose: document.getElementById("settings-close"),
     filtersBtn: document.getElementById("filters-btn"),
     filtersPanel: document.getElementById("filters-panel"),
     filtersClose: document.getElementById("filters-close"),
@@ -72,8 +77,9 @@
     presetName: document.getElementById("preset-name"),
     presetSave: document.getElementById("preset-save"),
     presetList: document.getElementById("preset-list"),
-    fetchMoreBtn: document.getElementById("fetch-more-btn"),
-    freshUpdateBtn: document.getElementById("fresh-update-btn"),
+    scrapeBtn: document.getElementById("scrape-btn"),
+    scrapeOverlay: document.getElementById("scrape-overlay"),
+    scrapeClose: document.getElementById("scrape-close"),
     loadMoreRow: document.getElementById("load-more-row"),
     loadMoreBtn: document.getElementById("load-more-btn"),
   };
@@ -98,7 +104,7 @@
   state.applied = loadStored("nj_applied", {});
   state.blocked = loadStored("nj_blocked", []);
   state.hideApplied = loadStored("nj_hide_applied", false) === true;
-  state.selectedLocations = loadStored("nj_locations", []);
+  state.selectedLocation = loadStored("nj_location", "");
   state.excludedKeywords = loadStored("nj_excluded_keywords", []);
   state.presets = loadStored("nj_presets", {});
 
@@ -214,12 +220,46 @@
     return html.join("");
   }
 
+  var _YOE_RE = /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)(?:\s*[-–—]|\bto\b\s*\d{1,2})?\s*\+?\s*(?:years?|yrs?)\b/gi;
+  var _EXP_CONTEXT_RE = /\b(?:experience|exp\.|developing|building|working|designing|engineering|managing|leading|programming|coding|creating|implementing|maintaining|in\s+\w+|of\s+\w+|with\s+\w+)\b/i;
+
+  function extractExperienceLines(description) {
+    if (!description) return [];
+    var lines = description.split(/\n/);
+    var results = [];
+    var seen = {};
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) continue;
+      _YOE_RE.lastIndex = 0;
+      if (_YOE_RE.test(line)) {
+        var lower = line.toLowerCase();
+        if (_EXP_CONTEXT_RE.test(lower) && !seen[lower]) {
+          seen[lower] = true;
+          results.push(line);
+        }
+      }
+    }
+    return results;
+  }
+
   // ---------- Filtering ----------
+
+  function matchesLocation(job) {
+    if (!state.selectedLocation) return true;
+    var filter = state.locationFilters.find(function (f) {
+      return f.label === state.selectedLocation;
+    });
+    if (!filter) return true;
+    var loc = (job.location || "").toLowerCase();
+    return filter.matchers.some(function (m) { return loc.indexOf(m) !== -1; });
+  }
 
   function visibleJobs() {
     return state.jobs.filter(function (job) {
       if (isBlocked(job.company)) return false;
       if (state.hideApplied && isApplied(job.job_url)) return false;
+      if (!matchesLocation(job)) return false;
       if (state.excludedKeywords.length > 0) {
         var titleLower = (job.title || "").toLowerCase();
         var excluded = state.excludedKeywords.some(function (kw) {
@@ -235,9 +275,6 @@
 
   function buildJobsUrl(page) {
     var params = "page=" + page + "&per_page=" + state.perPage;
-    if (state.selectedLocations.length > 0) {
-      params += "&location=" + encodeURIComponent(state.selectedLocations.join(","));
-    }
     if (state.query) {
       params += "&q=" + encodeURIComponent(state.query);
     }
@@ -281,28 +318,50 @@
     fetchJobs(state.page + 1, true);
   }
 
-  function triggerScrape(endpoint) {
+  function setScrapeDisabled(disabled) {
+    var btns = document.querySelectorAll(".scrape-action");
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = disabled;
+  }
+
+  function triggerSourceScrape(sources, resume, logEl) {
     state.fetching = true;
-    renderScrapeButtons();
-    return fetch(endpoint, { method: "POST" })
+    setScrapeDisabled(true);
+    if (logEl) {
+      logEl.textContent = "Fetching...";
+      logEl.className = "scrape-log";
+      logEl.hidden = false;
+    }
+    return fetch("/api/scrape", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sources: sources, resume: resume }),
+    })
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       })
       .then(function (data) {
         state.fetching = false;
-        renderScrapeButtons();
+        setScrapeDisabled(false);
+        if (logEl) {
+          var text = (data.output || "").trim();
+          if (data.errors) text += (text ? "\n" : "") + data.errors.trim();
+          logEl.textContent = text || (data.status === "ok" ? "Done" : "Error");
+          logEl.className = "scrape-log" +
+            (data.status === "ok" ? " scrape-log-ok" : " scrape-log-error");
+        }
         if (data.status === "ok") {
           state.page = 1;
-          return fetchJobs(1, false);
-        } else {
-          els.listHeader.textContent = "Scrape error — check server logs";
+          fetchJobs(1, false);
         }
       })
       .catch(function (err) {
         state.fetching = false;
-        renderScrapeButtons();
-        els.listHeader.textContent = "Scrape failed: " + err.message;
+        setScrapeDisabled(false);
+        if (logEl) {
+          logEl.textContent = "Failed: " + err.message;
+          logEl.className = "scrape-log scrape-log-error";
+        }
       });
   }
 
@@ -321,12 +380,6 @@
     }
   }
 
-  function renderScrapeButtons() {
-    els.fetchMoreBtn.disabled = state.fetching;
-    els.freshUpdateBtn.disabled = state.fetching;
-    els.fetchMoreBtn.textContent = state.fetching ? "Fetching..." : "Fetch more";
-    els.freshUpdateBtn.textContent = state.fetching ? "Updating..." : "Fresh update";
-  }
 
   // ---------- Rendering ----------
 
@@ -346,18 +399,14 @@
       escapeHtml(src.label) + '">' + src.badge + "</span></div>";
   }
 
-  function renderChips() {
-    var html = '<button class="chip' +
-      (state.selectedLocations.length === 0 ? " chip-active" : "") +
-      '" data-filter="all">All</button>';
+  function renderLocationSelect() {
+    var html = '<option value="">All locations</option>';
     state.locationFilters.forEach(function (f) {
-      var active = state.selectedLocations.indexOf(f.label) !== -1;
-      html += '<button class="chip' +
-        (active ? " chip-active" : "") +
-        '" data-filter="' + escapeHtml(f.label) + '">' +
-        escapeHtml(f.label) + "</button>";
+      var selected = state.selectedLocation === f.label ? " selected" : "";
+      html += '<option value="' + escapeHtml(f.label) + '"' + selected + '>' +
+        escapeHtml(f.label) + "</option>";
     });
-    els.chips.innerHTML = html;
+    els.locationSelect.innerHTML = html;
   }
 
   function renderControls() {
@@ -469,6 +518,29 @@
     els.blockBtn.textContent = "Block " + (job.company || "company");
     els.description.innerHTML = renderMarkdown(job.description);
 
+    var expLines = extractExperienceLines(job.description || "");
+    var hasStructured = job.min_experience_years != null;
+    if (expLines.length || hasStructured) {
+      var expHtml = "";
+      if (hasStructured) {
+        var y = job.min_experience_years;
+        expHtml += '<span class="exp-badge">' + escapeHtml(String(y)) +
+                   (y === 1 ? " year" : " years") + " min experience</span>";
+      }
+      if (expLines.length) {
+        expHtml += "<ul>";
+        for (var ei = 0; ei < expLines.length; ei++) {
+          expHtml += "<li>" + escapeHtml(expLines[ei]) + "</li>";
+        }
+        expHtml += "</ul>";
+      }
+      els.experience.innerHTML = expHtml;
+      els.experience.hidden = false;
+    } else {
+      els.experience.innerHTML = "";
+      els.experience.hidden = true;
+    }
+
     document.querySelectorAll(".job-card").forEach(function (card) {
       card.classList.toggle("job-card-active", card.dataset.url === url);
     });
@@ -526,24 +598,10 @@
     if (cards[next]) cards[next].scrollIntoView({ block: "nearest" });
   });
 
-  els.chips.addEventListener("click", function (e) {
-    var chip = e.target.closest(".chip");
-    if (!chip) return;
-    var filter = chip.dataset.filter;
-    if (filter === "all") {
-      state.selectedLocations = [];
-    } else {
-      var idx = state.selectedLocations.indexOf(filter);
-      if (idx !== -1) {
-        state.selectedLocations.splice(idx, 1);
-      } else {
-        state.selectedLocations.push(filter);
-      }
-    }
-    saveStored("nj_locations", state.selectedLocations);
-    renderChips();
-    state.page = 1;
-    fetchJobs(1, false);
+  els.locationSelect.addEventListener("change", function () {
+    state.selectedLocation = els.locationSelect.value;
+    saveStored("nj_location", state.selectedLocation);
+    renderList();
   });
 
   var searchTimer = null;
@@ -618,14 +676,26 @@
 
   els.loadMoreBtn.addEventListener("click", loadMore);
 
-  els.fetchMoreBtn.addEventListener("click", function () {
-    if (state.fetching) return;
-    triggerScrape("/api/fetch-more");
+  // ---------- Scrape panel ----------
+
+  function openScrape() { els.scrapeOverlay.hidden = false; }
+  function closeScrape() { els.scrapeOverlay.hidden = true; }
+
+  els.scrapeBtn.addEventListener("click", openScrape);
+  els.scrapeClose.addEventListener("click", function (e) {
+    e.stopPropagation();
+    closeScrape();
   });
 
-  els.freshUpdateBtn.addEventListener("click", function () {
-    if (state.fetching) return;
-    triggerScrape("/api/fresh-update");
+  els.scrapeOverlay.addEventListener("click", function (e) {
+    if (e.target === els.scrapeOverlay) { closeScrape(); return; }
+    var btn = e.target.closest(".scrape-action");
+    if (!btn || btn.disabled || state.fetching) return;
+    var srcStr = btn.dataset.sources || "";
+    var sources = srcStr.split(",").filter(Boolean);
+    var resume = btn.dataset.resume === "true";
+    var logId = sources.length === 1 ? "scrape-log-" + sources[0] : "scrape-log-all";
+    triggerSourceScrape(sources, resume, document.getElementById(logId));
   });
 
   // ---------- Filters panel ----------
@@ -714,7 +784,7 @@
     var name = els.presetName.value.trim();
     if (!name) return;
     state.presets[name] = {
-      locations: state.selectedLocations.slice(),
+      location: state.selectedLocation,
       keywords: state.excludedKeywords.slice(),
     };
     saveStored("nj_presets", state.presets);
@@ -738,16 +808,193 @@
     if (loadBtn) {
       var p = state.presets[loadBtn.dataset.preset];
       if (!p) return;
-      state.selectedLocations = p.locations.slice();
+      state.selectedLocation = p.location || "";
       state.excludedKeywords = p.keywords.slice();
-      saveStored("nj_locations", state.selectedLocations);
+      saveStored("nj_location", state.selectedLocation);
       saveStored("nj_excluded_keywords", state.excludedKeywords);
-      renderChips();
+      renderLocationSelect();
       renderKeywords();
       renderControls();
-      state.page = 1;
-      fetchJobs(1, false);
+      renderList();
     }
+  });
+
+  // ---------- Settings panel ----------
+
+  var settingsTimer = null;
+
+  function openSettings() {
+    fetch("/api/config")
+      .then(function (r) { return r.json(); })
+      .then(function (cfg) { populateSettings(cfg); })
+      .catch(function (err) { console.error("Failed to load config", err); });
+    els.settingsOverlay.hidden = false;
+  }
+
+  function closeSettings() {
+    els.settingsOverlay.hidden = true;
+  }
+
+  function populateSettings(cfg) {
+    var hc = cfg.hiringcafe || {};
+    var li = cfg.linkedin || {};
+    var ss = hc.search_state || {};
+
+    document.getElementById("cfg-max-experience").value = cfg.max_experience_years || 0;
+    document.getElementById("cfg-window-days").value = cfg.window_days || 7;
+
+    document.getElementById("cfg-hc-enabled").checked = hc.enabled !== false;
+    document.getElementById("cfg-hc-job-title").value = ss.jobTitleQuery || "";
+    setCheckboxGroup("cfg-hc-seniority", ss.seniorityLevel || []);
+    setCheckboxGroup("cfg-hc-bachelors-req", ss.bachelorsDegreeRequirements || []);
+    setCheckboxGroup("cfg-hc-masters-req", ss.mastersDegreeRequirements || []);
+    document.getElementById("cfg-hc-fields-of-study").value =
+      (ss.bachelorsDegreeFieldsOfStudy || []).join(", ");
+    document.getElementById("cfg-hc-min-salary").value = ss.maxCompensationLowEnd || "";
+    setCheckboxGroup("cfg-hc-clearances", ss.securityClearances || []);
+    document.getElementById("cfg-hc-transparent").checked =
+      ss.restrictJobsToTransparentSalaries === true;
+    document.getElementById("cfg-hc-days-old").value = hc.days_old || 1;
+    document.getElementById("cfg-hc-max-pages").value = hc.max_pages || 10;
+
+    document.getElementById("cfg-li-enabled").checked = li.enabled !== false;
+    renderSettingsTags("cfg-li-search-terms", li.search_terms || [], "li-terms");
+    renderSettingsTags("cfg-li-locations", li.locations || [], "li-locs");
+    document.getElementById("cfg-li-hours-old").value = li.hours_old || 24;
+    document.getElementById("cfg-li-batch-size").value = li.batch_size || 15;
+  }
+
+  function setCheckboxGroup(containerId, values) {
+    var inputs = document.getElementById(containerId).querySelectorAll('input[type="checkbox"]');
+    for (var i = 0; i < inputs.length; i++) {
+      inputs[i].checked = values.indexOf(inputs[i].value) !== -1;
+    }
+  }
+
+  function getCheckboxGroup(containerId) {
+    var checked = document.getElementById(containerId).querySelectorAll('input[type="checkbox"]:checked');
+    var values = [];
+    for (var i = 0; i < checked.length; i++) values.push(checked[i].value);
+    return values;
+  }
+
+  function renderSettingsTags(containerId, items, dataKey) {
+    var container = document.getElementById(containerId);
+    container.innerHTML = items.map(function (item) {
+      return '<span class="keyword-tag">' + escapeHtml(item) +
+        '<button class="keyword-remove" data-key="' + dataKey +
+        '" data-value="' + escapeHtml(item) + '">&times;</button></span>';
+    }).join("");
+    container.dataset.items = JSON.stringify(items);
+  }
+
+  function getSettingsTagItems(containerId) {
+    var container = document.getElementById(containerId);
+    try { return JSON.parse(container.dataset.items || "[]"); }
+    catch (e) { return []; }
+  }
+
+  function collectConfig() {
+    return {
+      max_experience_years: parseInt(document.getElementById("cfg-max-experience").value, 10) || 0,
+      window_days: parseInt(document.getElementById("cfg-window-days").value, 10) || 7,
+      hiringcafe: {
+        enabled: document.getElementById("cfg-hc-enabled").checked,
+        days_old: parseInt(document.getElementById("cfg-hc-days-old").value, 10) || 1,
+        max_pages: parseInt(document.getElementById("cfg-hc-max-pages").value, 10) || 10,
+        search_state: {
+          jobTitleQuery: document.getElementById("cfg-hc-job-title").value.trim(),
+          seniorityLevel: getCheckboxGroup("cfg-hc-seniority"),
+          bachelorsDegreeRequirements: getCheckboxGroup("cfg-hc-bachelors-req"),
+          mastersDegreeRequirements: getCheckboxGroup("cfg-hc-masters-req"),
+          bachelorsDegreeFieldsOfStudy: document.getElementById("cfg-hc-fields-of-study")
+            .value.split(",").map(function (s) { return s.trim(); }).filter(Boolean),
+          maxCompensationLowEnd: document.getElementById("cfg-hc-min-salary").value || "",
+          securityClearances: getCheckboxGroup("cfg-hc-clearances"),
+          restrictJobsToTransparentSalaries: document.getElementById("cfg-hc-transparent").checked,
+        },
+      },
+      linkedin: {
+        enabled: document.getElementById("cfg-li-enabled").checked,
+        search_terms: getSettingsTagItems("cfg-li-search-terms"),
+        locations: getSettingsTagItems("cfg-li-locations"),
+        hours_old: parseInt(document.getElementById("cfg-li-hours-old").value, 10) || 24,
+        batch_size: parseInt(document.getElementById("cfg-li-batch-size").value, 10) || 15,
+      },
+    };
+  }
+
+  function saveConfig() {
+    clearTimeout(settingsTimer);
+    settingsTimer = setTimeout(function () {
+      fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collectConfig()),
+      }).catch(function (err) {
+        console.error("Failed to save config", err);
+      });
+    }, 600);
+  }
+
+  els.settingsBtn.addEventListener("click", openSettings);
+  els.settingsClose.addEventListener("click", function (e) {
+    e.stopPropagation();
+    closeSettings();
+  });
+  els.settingsOverlay.addEventListener("click", function (e) {
+    if (e.target === els.settingsOverlay) closeSettings();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      if (!els.scrapeOverlay.hidden) { closeScrape(); return; }
+      if (!els.settingsOverlay.hidden) closeSettings();
+    }
+  });
+
+  els.settingsPanel.addEventListener("input", saveConfig);
+  els.settingsPanel.addEventListener("change", saveConfig);
+
+  document.getElementById("cfg-li-term-add").addEventListener("click", function () {
+    var input = document.getElementById("cfg-li-term-input");
+    var val = input.value.trim();
+    if (!val) return;
+    var items = getSettingsTagItems("cfg-li-search-terms");
+    if (items.indexOf(val) === -1) items.push(val);
+    renderSettingsTags("cfg-li-search-terms", items, "li-terms");
+    input.value = "";
+    saveConfig();
+  });
+
+  document.getElementById("cfg-li-term-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") document.getElementById("cfg-li-term-add").click();
+  });
+
+  document.getElementById("cfg-li-loc-add").addEventListener("click", function () {
+    var input = document.getElementById("cfg-li-loc-input");
+    var val = input.value.trim();
+    if (!val) return;
+    var items = getSettingsTagItems("cfg-li-locations");
+    if (items.indexOf(val) === -1) items.push(val);
+    renderSettingsTags("cfg-li-locations", items, "li-locs");
+    input.value = "";
+    saveConfig();
+  });
+
+  document.getElementById("cfg-li-loc-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") document.getElementById("cfg-li-loc-add").click();
+  });
+
+  els.settingsPanel.addEventListener("click", function (e) {
+    var btn = e.target.closest(".keyword-remove");
+    if (!btn || !btn.dataset.key) return;
+    var key = btn.dataset.key;
+    var containerId = key === "li-terms" ? "cfg-li-search-terms" : "cfg-li-locations";
+    var items = getSettingsTagItems(containerId).filter(function (item) {
+      return item !== btn.dataset.value;
+    });
+    renderSettingsTags(containerId, items, key);
+    saveConfig();
   });
 
   // ---------- Init ----------
@@ -757,7 +1004,7 @@
     .catch(function () { return {}; })
     .then(function (config) {
       state.locationFilters = config.location_filters || [];
-      renderChips();
+      renderLocationSelect();
       renderControls();
       renderBlockedPanel();
       return fetchJobs(1, false);

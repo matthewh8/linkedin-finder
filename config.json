@@ -1,54 +1,132 @@
 {
+  "max_export_per_source": 25,
   "window_days": 7,
   "max_experience_years": 0,
   "blocked_companies": [],
   "location_filters": [
-    { "label": "California", "matchers": ["california", ", ca"] },
-    { "label": "Texas", "matchers": ["texas", ", tx"] },
-    { "label": "New York", "matchers": ["new york", ", ny"] },
-    { "label": "Seattle", "matchers": ["seattle", "washington", ", wa"] },
-    { "label": "Remote", "matchers": ["remote"] }
+    {
+      "label": "Bay Area",
+      "matchers": [
+        "san francisco",
+        "san jose",
+        "oakland",
+        "palo alto",
+        "mountain view",
+        "sunnyvale",
+        "santa clara",
+        "menlo park",
+        "redwood city",
+        "fremont",
+        "cupertino",
+        "san mateo",
+        "berkeley",
+        "south san francisco"
+      ]
+    },
+    {
+      "label": "California",
+      "matchers": [
+        "california",
+        ", ca"
+      ]
+    },
+    {
+      "label": "Texas",
+      "matchers": [
+        "texas",
+        ", tx"
+      ]
+    },
+    {
+      "label": "New York",
+      "matchers": [
+        "new york",
+        ", ny"
+      ]
+    },
+    {
+      "label": "Seattle",
+      "matchers": [
+        "seattle",
+        "washington",
+        ", wa"
+      ]
+    },
+    {
+      "label": "Remote",
+      "matchers": [
+        "remote"
+      ]
+    }
   ],
   "linkedin": {
     "enabled": true,
     "hours_old": 24,
     "batch_size": 15,
     "search_terms": [
-      "software engineer new grad",
-      "software engineer entry level"
+      "software engineer"
     ],
     "locations": [
-      "California, United States",
-      "Texas, United States",
-      "New York, United States",
-      "Seattle, Washington, United States"
+      "california",
+      "texas",
+      "new york",
+      "seattle",
+      "bay area"
     ]
   },
   "hiringcafe": {
     "enabled": true,
-    "days_old": 1,
+    "days_old": 2,
     "max_pages": 10,
     "search_state": {
       "locations": [
         {
           "formatted_address": "United States",
-          "types": ["country"],
-          "geometry": { "location": { "lat": 37.3388, "lon": -121.8916 } },
+          "types": [
+            "country"
+          ],
+          "geometry": {
+            "location": {
+              "lat": 37.3388,
+              "lon": -121.8916
+            }
+          },
           "id": "user_country",
           "address_components": [
-            { "long_name": "United States", "short_name": "US", "types": ["country"] }
+            {
+              "long_name": "United States",
+              "short_name": "US",
+              "types": [
+                "country"
+              ]
+            }
           ],
-          "options": { "flexible_regions": ["anywhere_in_continent", "anywhere_in_world"] }
+          "options": {
+            "flexible_regions": [
+              "anywhere_in_continent",
+              "anywhere_in_world"
+            ]
+          }
         }
       ],
-      "restrictJobsToTransparentSalaries": true,
-      "bachelorsDegreeFieldsOfStudy": ["computer science"],
-      "maxCompensationLowEnd": "80000",
-      "bachelorsDegreeRequirements": ["Required"],
-      "mastersDegreeRequirements": ["Not Mentioned"],
-      "seniorityLevel": ["Entry Level", "No Prior Experience Required"],
-      "securityClearances": ["None"],
-      "jobTitleQuery": "\"software engineer\", software"
+      "restrictJobsToTransparentSalaries": false,
+      "bachelorsDegreeFieldsOfStudy": [
+        "computer science"
+      ],
+      "maxCompensationLowEnd": "90000",
+      "bachelorsDegreeRequirements": [
+        "Required"
+      ],
+      "mastersDegreeRequirements": [
+        "Not Mentioned"
+      ],
+      "seniorityLevel": [
+        "Entry Level"
+      ],
+      "securityClearances": [
+        "None"
+      ],
+      "jobTitleQuery": "software engineer"
     }
   }
 }

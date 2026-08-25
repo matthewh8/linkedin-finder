@@ -33,6 +33,15 @@ def location_matchers(config):
             for f in config.get("location_filters", [])}
 
 
+def _deep_merge(base: dict, updates: dict):
+    for key, value in updates.items():
+        if (key in base and isinstance(base[key], dict)
+                and isinstance(value, dict)):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -56,14 +65,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_jobs(parsed)
         elif parsed.path == "/api/stats":
             self._handle_stats()
+        elif parsed.path == "/api/config":
+            self._handle_get_config()
         else:
             super().do_GET()
 
     def do_POST(self):
-        if self.path == "/api/fetch-more":
+        if self.path == "/api/scrape":
+            self._handle_scrape_source()
+        elif self.path == "/api/fetch-more":
             self._handle_scrape(resume=True)
         elif self.path == "/api/fresh-update":
             self._handle_scrape(resume=False)
+        elif self.path == "/api/config":
+            self._handle_post_config()
         else:
             self.send_error(404)
 
@@ -165,12 +180,71 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "last_updated": last[0] if last else None,
         })
 
+    # ---------- GET/POST /api/config ----------
+
+    def _handle_get_config(self):
+        try:
+            self._json_response(load_config())
+        except Exception as e:
+            self._error(500, f"Failed to read config: {e}")
+
+    def _handle_post_config(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            updates = json.loads(body)
+        except (ValueError, json.JSONDecodeError) as e:
+            self._error(400, f"Invalid JSON: {e}")
+            return
+        try:
+            config = load_config()
+            _deep_merge(config, updates)
+            CONFIG_FILE.write_text(
+                json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+            self._json_response({"status": "ok", "config": config})
+        except Exception as e:
+            self._error(500, f"Failed to write config: {e}")
+
     # ---------- POST /api/fetch-more & /api/fresh-update ----------
 
     def _handle_scrape(self, resume: bool):
-        cmd = [sys.executable, str(SCRAPER)]
+        venv_python = ROOT / ".venv" / "bin" / "python"
+        python = str(venv_python) if venv_python.exists() else sys.executable
+        cmd = [python, str(SCRAPER)]
         if resume:
             cmd.append("--continue")
+        try:
+            result = subprocess.run(cmd, cwd=str(ROOT), capture_output=True,
+                                    text=True, timeout=300)
+            self._json_response({
+                "status": "ok" if result.returncode == 0 else "error",
+                "output": result.stdout[-2000:] if result.stdout else "",
+                "errors": result.stderr[-1000:] if result.stderr else "",
+            })
+        except subprocess.TimeoutExpired:
+            self._error(504, "Scraper timed out after 5 minutes")
+
+    def _handle_scrape_source(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except (ValueError, json.JSONDecodeError):
+            body = {}
+
+        sources = body.get("sources", [])
+        resume = body.get("resume", False)
+
+        venv_python = ROOT / ".venv" / "bin" / "python"
+        python = str(venv_python) if venv_python.exists() else sys.executable
+        cmd = [python, str(SCRAPER)]
+
+        for s in sources:
+            if s in ("linkedin", "hiringcafe"):
+                cmd.extend(["--source", s])
+
+        if resume:
+            cmd.append("--continue")
+
         try:
             result = subprocess.run(cmd, cwd=str(ROOT), capture_output=True,
                                     text=True, timeout=300)
