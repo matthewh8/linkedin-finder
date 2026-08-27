@@ -11,6 +11,7 @@ import json
 import math
 import re
 import sqlite3
+import threading
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -335,14 +336,16 @@ def run_linkedin_search(search_term: str, location: str, hours_old: int,
     """Run one LinkedIn search, retrying once with backoff. Returns an empty
     DataFrame on total failure so a single bad search never kills the run."""
     short_loc = location.split(",")[0]
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         try:
             if attempt == 1:
                 progress(f"  {step}Searching \"{search_term}\" in {short_loc} "
                          f"(offset {offset})...")
             else:
+                delay = RETRY_DELAY_SECONDS * (2 ** (attempt - 2))
                 progress(f"  {step}Retrying \"{search_term}\" in {short_loc} "
-                         f"(waiting {RETRY_DELAY_SECONDS}s)...")
+                         f"(attempt {attempt}, waiting {delay}s)...")
+                time.sleep(delay)
             df = scrape_jobs(
                 site_name=["linkedin"],
                 search_term=search_term,
@@ -356,95 +359,125 @@ def run_linkedin_search(search_term: str, location: str, hours_old: int,
             return df
         except Exception as e:
             progress(f"    -> attempt {attempt} failed: {e}")
-            if attempt == 1:
-                time.sleep(RETRY_DELAY_SECONDS)
     return pd.DataFrame()
 
 
+def _build_linkedin_entry(row, scraped_at: str) -> dict | None:
+    job_url = clean(row.get("job_url"))
+    if not job_url:
+        return None
+    description = clean(row.get("description"))
+    salary = format_salary(clean(row.get("min_amount")),
+                           clean(row.get("max_amount")),
+                           clean(row.get("interval")))
+    if not salary:
+        salary = salary_from_description(description or "")
+    date_posted = clean(row.get("date_posted"))
+    return {
+        "source": "linkedin",
+        "title": clean(row.get("title")),
+        "company": clean(row.get("company")),
+        "location": clean(row.get("location")),
+        "date_posted": str(date_posted) if date_posted is not None else None,
+        "scraped_at": scraped_at,
+        "job_url": job_url,
+        "description": description,
+        "company_logo": clean(row.get("company_logo")),
+        "salary": salary,
+        "min_experience_years": None,
+    }
+
+
 def scrape_linkedin(cfg: dict, scraped_at: str, hours_override: int | None,
+                    seen_urls: set[str],
                     batch_size: int | None = None,
-                    offsets: dict[str, int] | None = None,
-                    ) -> tuple[list[dict], dict[str, int]]:
-    """Returns (entries, updated_offsets) where updated_offsets maps each
-    'term|location' key to the next offset to use on a subsequent call."""
+                    filter_cfg: dict | None = None,
+                    ) -> list[dict]:
+    """Fetch LinkedIn jobs, targeting batch_size unique (unseen) results per
+    search pair.  Automatically paginates until the target is met or results
+    are exhausted.  Entries that fail passes_filters() do not count toward
+    the target."""
     hours_old = hours_override or cfg.get("hours_old", 24)
-    results_wanted = batch_size or cfg.get("batch_size", cfg.get("results_wanted", 50))
-    offsets = offsets or {}
-    new_offsets = {}
-    frames = []
+    target = batch_size or cfg.get("batch_size", 15)
+    api_batch = max(target * 2, 30)
     terms = cfg.get("search_terms", [])
     locations = cfg.get("locations", [])
     total_searches = len(terms) * len(locations)
+    fc = filter_cfg or {}
+
+    collected_urls = set(seen_urls)
+    lock = threading.Lock()
+
+    def fetch_pair(term, loc, step):
+        offset = 0
+        max_offset = api_batch * 5
+        entries = []
+        while len(entries) < target and offset < max_offset:
+            df = run_linkedin_search(term, loc, hours_old,
+                                     api_batch, offset, step)
+            if df.empty:
+                break
+            before = len(entries)
+            for _, row in df.iterrows():
+                url = clean(row.get("job_url"))
+                if not url:
+                    continue
+                with lock:
+                    if url in collected_urls:
+                        continue
+                    collected_urls.add(url)
+                entry = _build_linkedin_entry(row, scraped_at)
+                if not entry:
+                    continue
+                if not passes_filters(entry, **fc):
+                    continue
+                entries.append(entry)
+                if len(entries) >= target:
+                    break
+            if len(df) < api_batch:
+                break
+            if len(entries) == before:
+                break
+            offset += len(df)
+        progress(f"  {step}{loc}: {len(entries)} unique jobs")
+        return entries
 
     searches = []
     for i, term in enumerate(terms):
         for j, loc in enumerate(locations):
-            key = f"{term}|{loc}"
-            offset = offsets.get(key, 0)
             num = i * len(locations) + j + 1
             step = f"[{num}/{total_searches}] "
-            searches.append((key, term, loc, offset, step))
+            searches.append((term, loc, step))
 
+    all_entries = []
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {
-            pool.submit(run_linkedin_search, term, loc, hours_old,
-                        results_wanted, offset, step): key
-            for key, term, loc, offset, step in searches
+            pool.submit(fetch_pair, term, loc, step): (term, loc)
+            for term, loc, step in searches
         }
         for future in as_completed(futures):
-            key = futures[future]
-            df = future.result()
-            frames.append(df)
-            offset = next(o for k, _, _, o, _ in searches if k == key)
-            new_offsets[key] = offset + (len(df) if not df.empty else results_wanted)
-    non_empty = [f for f in frames if not f.empty]
-    if not non_empty:
-        return [], new_offsets
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        merged = pd.concat(non_empty, ignore_index=True)
-    merged = merged.drop_duplicates(subset="job_url", keep="first")
+            all_entries.extend(future.result())
 
-    entries = []
-    for _, row in merged.iterrows():
-        job_url = clean(row.get("job_url"))
-        if not job_url:
-            continue
-        date_posted = clean(row.get("date_posted"))
-        description = clean(row.get("description"))
-        salary = format_salary(clean(row.get("min_amount")),
-                               clean(row.get("max_amount")),
-                               clean(row.get("interval")))
-        if not salary:
-            salary = salary_from_description(description or "")
-        entries.append({
-            "source": "linkedin",
-            "title": clean(row.get("title")),
-            "company": clean(row.get("company")),
-            "location": clean(row.get("location")),
-            "date_posted": str(date_posted) if date_posted is not None else None,
-            "scraped_at": scraped_at,
-            "job_url": job_url,
-            "description": description,
-            "company_logo": clean(row.get("company_logo")),
-            "salary": salary,
-            "min_experience_years": None,
-        })
-    return entries, new_offsets
+    return all_entries
 
 
 # ---------- Hiring.Cafe ----------
+
+HC_MAX_RETRIES = 3
+
 
 def fetch_hiringcafe_page(search_state: dict, page: int) -> dict | None:
     """Fetch one SSR search page and return its pageProps, or None on failure.
     Hiring.Cafe embeds results in the page's __NEXT_DATA__ blob."""
     url = ("https://hiring.cafe/?searchState="
            + urllib.parse.quote(json.dumps(search_state)) + f"&page={page}")
-    for attempt in (1, 2):
+    for attempt in range(1, HC_MAX_RETRIES + 1):
         try:
-            if attempt == 2:
-                progress(f"  Retrying page {page} (waiting {HC_RETRY_DELAY_SECONDS}s)...")
+            if attempt > 1:
+                delay = HC_RETRY_DELAY_SECONDS * (2 ** (attempt - 2))
+                progress(f"  Retrying page {page} (attempt {attempt}, "
+                         f"waiting {delay}s)...")
+                time.sleep(delay)
             r = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=60)
             r.raise_for_status()
             m = re.search(r'<script id="__NEXT_DATA__" type="application/json">'
@@ -454,8 +487,6 @@ def fetch_hiringcafe_page(search_state: dict, page: int) -> dict | None:
             return json.loads(m.group(1))["props"]["pageProps"]
         except Exception as e:
             progress(f"    -> page {page} attempt {attempt} failed: {e}")
-            if attempt == 1:
-                time.sleep(HC_RETRY_DELAY_SECONDS)
     return None
 
 
@@ -559,9 +590,8 @@ def scrape_hiringcafe(cfg: dict, scraped_at: str,
         for p in batch_pages:
             props = results[p]
             if props is None:
-                progress(f"    -> page {p} returned no data, stopping")
-                stop = True
-                break
+                progress(f"    -> page {p} returned no data, skipping")
+                continue
             hits = props.get("ssrHits") or []
             total_count = props.get("ssrTotalCount", "?")
             progress(f"    -> page {p}: {len(hits)} jobs (total available: {total_count})")
@@ -611,12 +641,52 @@ def scrape_hiringcafe(cfg: dict, scraped_at: str,
 
 # ---------- Filtering / persistence ----------
 
-def passes_filters(entry: dict, max_years: int, blocked: set[str]) -> bool:
+_SALARY_NUM_RE = re.compile(r"\$([\d,]+(?:\.\d+)?)(K?)")
+
+
+def _parse_salary_bounds(salary_str: str) -> tuple[float | None, float | None]:
+    """Extract (min_annual, max_annual) dollars from a formatted salary string."""
+    if not salary_str:
+        return None, None
+    amounts = []
+    for m in _SALARY_NUM_RE.finditer(salary_str):
+        val = float(m.group(1).replace(",", ""))
+        if m.group(2) == "K":
+            val *= 1000
+        amounts.append(val)
+    if not amounts:
+        return None, None
+    if "/hr" in salary_str:
+        amounts = [a * 2080 for a in amounts]
+    elif "/mo" in salary_str:
+        amounts = [a * 12 for a in amounts]
+    elif "/wk" in salary_str:
+        amounts = [a * 52 for a in amounts]
+    elif "/day" in salary_str:
+        amounts = [a * 260 for a in amounts]
+    return amounts[0], amounts[-1]
+
+
+def passes_filters(entry: dict, max_years: int, blocked: set[str],
+                   blocked_keywords: list[str] | None = None,
+                   max_salary: float | None = None,
+                   max_min_salary: float | None = None) -> bool:
     if (entry.get("company") or "").strip().lower() in blocked:
         return False
+    title = (entry.get("title") or "").lower()
+    if blocked_keywords:
+        for kw in blocked_keywords:
+            if kw in title:
+                return False
     yoe = entry.get("min_experience_years")
     if yoe is not None and yoe > max_years:
         return False
+    if max_salary is not None or max_min_salary is not None:
+        lo, hi = _parse_salary_bounds(entry.get("salary"))
+        if max_salary is not None and hi is not None and hi > max_salary:
+            return False
+        if max_min_salary is not None and lo is not None and lo >= max_min_salary:
+            return False
     text = " ".join(filter(None, [entry.get("title"), entry.get("description")]))
     if mentions_excess_experience(text, max_years):
         return False
@@ -672,6 +742,14 @@ def main():
     if not args.resume:
         reset_cursors(conn)
 
+    max_years = cfg.get("max_experience_years", 1)
+    blocked = {c.strip().lower() for c in cfg.get("blocked_companies", [])}
+    blocked_kw = [k.lower() for k in cfg.get("blocked_title_keywords", [])]
+    filter_cfg = dict(max_years=max_years, blocked=blocked,
+                      blocked_keywords=blocked_kw,
+                      max_salary=cfg.get("max_salary"),
+                      max_min_salary=cfg.get("max_min_salary"))
+
     new_entries = []
 
     if "Hiring.Cafe" in sources:
@@ -685,23 +763,16 @@ def main():
         update_cursor(conn, "hiringcafe", "default", next_page)
 
     if "LinkedIn" in sources:
-        li_offsets = {}
-        if args.resume:
-            for term in li_cfg.get("search_terms", []):
-                for loc in li_cfg.get("locations", []):
-                    key = f"{term}|{loc}"
-                    li_offsets[key] = get_cursor(conn, "linkedin", key)
         terms = li_cfg.get("search_terms", [])
         locs = li_cfg.get("locations", [])
-        progress(f"--- LinkedIn ({len(terms)} terms x {len(locs)} locations "
-                 f"= {len(terms) * len(locs)} searches) ---")
-        li_entries, new_offsets = scrape_linkedin(
-            li_cfg, scraped_at, args.hours_old,
-            batch_size=args.batch_size, offsets=li_offsets)
+        target = args.batch_size or li_cfg.get("batch_size", 15)
+        progress(f"--- LinkedIn ({len(terms)} terms x {len(locs)} locations, "
+                 f"target {target} unique per search) ---")
+        li_entries = scrape_linkedin(
+            li_cfg, scraped_at, args.hours_old, seen_urls,
+            batch_size=args.batch_size, filter_cfg=filter_cfg)
         progress(f"LinkedIn done: {len(li_entries)} jobs collected")
         new_entries += li_entries
-        for key, val in new_offsets.items():
-            update_cursor(conn, "linkedin", key, val)
 
     conn.commit()
 
@@ -711,10 +782,8 @@ def main():
     progress(f"Dedup: {before_dedup} fetched, {before_dedup - len(new_entries)} "
              f"already seen, {len(new_entries)} new")
 
-    max_years = cfg.get("max_experience_years", 1)
-    blocked = {c.strip().lower() for c in cfg.get("blocked_companies", [])}
     kept_entries = [e for e in new_entries
-                    if passes_filters(e, max_years, blocked)]
+                    if passes_filters(e, **filter_cfg)]
     filtered_out = len(new_entries) - len(kept_entries)
     progress(f"Filters: {filtered_out} removed (experience/degree/blocklist), "
              f"{len(kept_entries)} kept")

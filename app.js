@@ -134,14 +134,8 @@
   }
 
   function jobTimestamp(job) {
-    // date_posted is date-only; scraped_at is a full ISO timestamp. Prefer
-    // scraped_at when both fall on the same day so "N minutes ago" works.
-    var scraped = job.scraped_at ? new Date(job.scraped_at) : null;
-    var posted = job.date_posted ? new Date(job.date_posted + "T00:00:00Z") : null;
-    if (posted && scraped && posted.toDateString() !== scraped.toDateString()) {
-      return posted;
-    }
-    return scraped || posted;
+    if (job.date_posted) return new Date(job.date_posted + "T00:00:00Z");
+    return job.scraped_at ? new Date(job.scraped_at) : null;
   }
 
   function relativeTime(date) {
@@ -836,26 +830,10 @@
   }
 
   function populateSettings(cfg) {
-    var hc = cfg.hiringcafe || {};
     var li = cfg.linkedin || {};
-    var ss = hc.search_state || {};
 
     document.getElementById("cfg-max-experience").value = cfg.max_experience_years || 0;
     document.getElementById("cfg-window-days").value = cfg.window_days || 7;
-
-    document.getElementById("cfg-hc-enabled").checked = hc.enabled !== false;
-    document.getElementById("cfg-hc-job-title").value = ss.jobTitleQuery || "";
-    setCheckboxGroup("cfg-hc-seniority", ss.seniorityLevel || []);
-    setCheckboxGroup("cfg-hc-bachelors-req", ss.bachelorsDegreeRequirements || []);
-    setCheckboxGroup("cfg-hc-masters-req", ss.mastersDegreeRequirements || []);
-    document.getElementById("cfg-hc-fields-of-study").value =
-      (ss.bachelorsDegreeFieldsOfStudy || []).join(", ");
-    document.getElementById("cfg-hc-min-salary").value = ss.maxCompensationLowEnd || "";
-    setCheckboxGroup("cfg-hc-clearances", ss.securityClearances || []);
-    document.getElementById("cfg-hc-transparent").checked =
-      ss.restrictJobsToTransparentSalaries === true;
-    document.getElementById("cfg-hc-days-old").value = hc.days_old || 1;
-    document.getElementById("cfg-hc-max-pages").value = hc.max_pages || 10;
 
     document.getElementById("cfg-li-enabled").checked = li.enabled !== false;
     renderSettingsTags("cfg-li-search-terms", li.search_terms || [], "li-terms");
@@ -898,22 +876,6 @@
     return {
       max_experience_years: parseInt(document.getElementById("cfg-max-experience").value, 10) || 0,
       window_days: parseInt(document.getElementById("cfg-window-days").value, 10) || 7,
-      hiringcafe: {
-        enabled: document.getElementById("cfg-hc-enabled").checked,
-        days_old: parseInt(document.getElementById("cfg-hc-days-old").value, 10) || 1,
-        max_pages: parseInt(document.getElementById("cfg-hc-max-pages").value, 10) || 10,
-        search_state: {
-          jobTitleQuery: document.getElementById("cfg-hc-job-title").value.trim(),
-          seniorityLevel: getCheckboxGroup("cfg-hc-seniority"),
-          bachelorsDegreeRequirements: getCheckboxGroup("cfg-hc-bachelors-req"),
-          mastersDegreeRequirements: getCheckboxGroup("cfg-hc-masters-req"),
-          bachelorsDegreeFieldsOfStudy: document.getElementById("cfg-hc-fields-of-study")
-            .value.split(",").map(function (s) { return s.trim(); }).filter(Boolean),
-          maxCompensationLowEnd: document.getElementById("cfg-hc-min-salary").value || "",
-          securityClearances: getCheckboxGroup("cfg-hc-clearances"),
-          restrictJobsToTransparentSalaries: document.getElementById("cfg-hc-transparent").checked,
-        },
-      },
       linkedin: {
         enabled: document.getElementById("cfg-li-enabled").checked,
         search_terms: getSettingsTagItems("cfg-li-search-terms"),

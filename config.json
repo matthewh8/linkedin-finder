@@ -3,6 +3,9 @@
   "window_days": 7,
   "max_experience_years": 0,
   "blocked_companies": [],
+  "blocked_title_keywords": ["intern", "2027", "systems", "android", "civil"],
+  "max_salary": 250000,
+  "max_min_salary": 200000,
   "location_filters": [
     {
       "label": "Bay Area",
@@ -109,11 +112,11 @@
           }
         }
       ],
-      "restrictJobsToTransparentSalaries": false,
+      "restrictJobsToTransparentSalaries": true,
       "bachelorsDegreeFieldsOfStudy": [
         "computer science"
       ],
-      "maxCompensationLowEnd": "90000",
+      "maxCompensationLowEnd": "80000",
       "bachelorsDegreeRequirements": [
         "Required"
       ],
@@ -121,12 +124,13 @@
         "Not Mentioned"
       ],
       "seniorityLevel": [
-        "Entry Level"
+        "Entry Level",
+        "No Prior Experience Required"
       ],
       "securityClearances": [
         "None"
       ],
-      "jobTitleQuery": "software engineer"
+      "jobTitleQuery": "\"software engineer\", software"
     }
   }
 }
